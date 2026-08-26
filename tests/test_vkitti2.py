@@ -10,6 +10,7 @@ from perception_rt.data.vkitti2 import (
     load_depth,
     load_intrinsics,
     load_rgb,
+    load_sample,
     load_semantic_mask,
     split_samples_by_scene,
 )
@@ -310,3 +311,86 @@ def test_split_samples_by_scene_rejects_unknown_scene(
 
     with pytest.raises(ValueError, match="Unconfigured scenes.*Scene99"):
         split_samples_by_scene(samples)
+
+
+def test_load_sample_returns_aligned_modalities(tmp_path: Path) -> None:
+    create_sample_files(tmp_path)
+    sample = discover_samples(tmp_path)[0]
+
+    expected_rgb = np.array(
+        [
+            [[255, 0, 0], [0, 255, 0]],
+            [[0, 0, 255], [255, 255, 255]],
+        ],
+        dtype=np.uint8,
+    )
+    assert cv2.imwrite(
+        str(sample.rgb_path),
+        cv2.cvtColor(expected_rgb, cv2.COLOR_RGB2BGR),
+    )
+
+    raw_depth = np.array(
+        [
+            [100, 200],
+            [300, 65535],
+        ],
+        dtype=np.uint16,
+    )
+    assert cv2.imwrite(str(sample.depth_path), raw_depth)
+
+    semantic_rgb = np.array(
+        [
+            [[100, 60, 100], [90, 200, 255]],
+            [[100, 60, 100], [90, 200, 255]],
+        ],
+        dtype=np.uint8,
+    )
+    assert cv2.imwrite(
+        str(sample.semantic_path),
+        cv2.cvtColor(semantic_rgb, cv2.COLOR_RGB2BGR),
+    )
+
+    color_table = write_color_table(
+        tmp_path / "colors.txt",
+        "Category r g b\nRoad 100 60 100\nSky 90 200 255\n",
+    )
+    classes = load_color_table(color_table)
+
+    loaded = load_sample(sample, classes)
+
+    assert loaded.rgb.shape == (2, 2, 3)
+    assert loaded.depth.values_m.shape == (2, 2)
+    assert loaded.depth.valid_mask.shape == (2, 2)
+    assert loaded.semantic_mask.shape == (2, 2)
+
+    assert loaded.rgb.dtype == np.uint8
+    np.testing.assert_allclose(
+        loaded.depth.values_m,
+        [[1.0, 2.0], [3.0, 0.0]],
+    )
+    np.testing.assert_array_equal(
+        loaded.semantic_mask,
+        [[0, 1], [0, 1]],
+    )
+
+
+def test_load_sample_rejects_spatial_mismatch(tmp_path: Path) -> None:
+    create_sample_files(tmp_path)
+    sample = discover_samples(tmp_path)[0]
+
+    rgb = np.zeros((2, 2, 3), dtype=np.uint8)
+    depth = np.ones((3, 2), dtype=np.uint16)
+    semantic = np.zeros((2, 2, 3), dtype=np.uint8)
+
+    assert cv2.imwrite(str(sample.rgb_path), rgb)
+    assert cv2.imwrite(str(sample.depth_path), depth)
+    assert cv2.imwrite(str(sample.semantic_path), semantic)
+
+    color_table = write_color_table(
+        tmp_path / "colors.txt",
+        "Category r g b\nUndefined 0 0 0\n",
+    )
+    classes = load_color_table(color_table)
+
+    with pytest.raises(ValueError, match="RGB/depth shape mismatch"):
+        load_sample(sample, classes)

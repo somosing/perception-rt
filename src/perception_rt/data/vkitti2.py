@@ -74,6 +74,16 @@ VALIDATION_SCENES = frozenset({"Scene06"})
 TEST_SCENES = frozenset({"Scene18"})
 
 
+@dataclass(frozen=True)
+class LoadedSample:
+    """Decoded and spatially aligned model input and targets."""
+
+    paths: SamplePaths
+    rgb: np.ndarray
+    depth: DepthMap
+    semantic_mask: np.ndarray
+
+
 def load_color_table(path: Path) -> tuple[SemanticClass, ...]:
     """Load a Virtual KITTI 2 colors.txt file.
 
@@ -351,4 +361,41 @@ def split_samples_by_scene(
         train=train,
         validation=validation,
         test=test,
+    )
+
+
+def load_sample(
+    sample: SamplePaths,
+    classes: tuple[SemanticClass, ...],
+) -> LoadedSample:
+    """Load and validate one aligned RGB-depth-semantic sample."""
+    rgb = load_rgb(sample.rgb_path)
+    depth = load_depth(sample.depth_path)
+    semantic_mask = load_semantic_mask(sample.semantic_path, classes)
+
+    expected_shape = rgb.shape[:2]
+
+    if depth.values_m.shape != expected_shape:
+        raise ValueError(
+            f"RGB/depth shape mismatch for {sample.rgb_path}: "
+            f"{expected_shape} vs {depth.values_m.shape}"
+        )
+
+    if depth.valid_mask.shape != expected_shape:
+        raise ValueError(
+            f"RGB/depth-mask shape mismatch for {sample.rgb_path}: "
+            f"{expected_shape} vs {depth.valid_mask.shape}"
+        )
+
+    if semantic_mask.shape != expected_shape:
+        raise ValueError(
+            f"RGB/semantic shape mismatch for {sample.rgb_path}: "
+            f"{expected_shape} vs {semantic_mask.shape}"
+        )
+
+    return LoadedSample(
+        paths=sample,
+        rgb=rgb,
+        depth=depth,
+        semantic_mask=semantic_mask,
     )
