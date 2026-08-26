@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 
@@ -13,6 +14,7 @@ class SemanticClass:
     class_id: int
     name: str
     color: tuple[int, int, int]
+
 
 @dataclass(frozen=True)
 class CameraIntrinsics:
@@ -35,6 +37,14 @@ class CameraIntrinsics:
             ],
             dtype=np.float64,
         )
+
+
+@dataclass(frozen=True)
+class DepthMap:
+    """Decoded metric depth and its validity mask."""
+
+    values_m: np.ndarray
+    valid_mask: np.ndarray
 
 
 def load_color_table(path: Path) -> tuple[SemanticClass, ...]:
@@ -90,6 +100,7 @@ def load_color_table(path: Path) -> tuple[SemanticClass, ...]:
         raise ValueError(f"No semantic classes found in {path}")
 
     return tuple(classes)
+
 
 def load_intrinsics(path: Path) -> dict[tuple[int, int], CameraIntrinsics]:
     """Load camera intrinsics indexed by (frame, camera_id)."""
@@ -148,3 +159,77 @@ def load_intrinsics(path: Path) -> dict[tuple[int, int], CameraIntrinsics]:
         raise ValueError(f"No camera intrinsics found in {path}")
 
     return intrinsics
+
+
+def load_depth(path: Path) -> DepthMap:
+    """Load a Virtual KITTI 2 depth PNG as metric float32 depth.
+
+    Raw values are centimetres. Zero and the uint16 maximum value are treated
+    as invalid. Invalid metric-depth values are stored as zero and must be
+    ignored using valid_mask.
+    """
+    raw_depth = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+
+    if raw_depth is None:
+        raise FileNotFoundError(f"Failed to read depth image: {path}")
+
+    if raw_depth.ndim != 2:
+        raise ValueError(f"Expected single-channel depth image, got shape {raw_depth.shape}")
+
+    if raw_depth.dtype != np.uint16:
+        raise ValueError(f"Expected uint16 depth image, got {raw_depth.dtype}")
+
+    invalid_far_plane = np.iinfo(np.uint16).max
+    valid_mask = (raw_depth > 0) & (raw_depth < invalid_far_plane)
+
+    values_m = raw_depth.astype(np.float32) / 100.0
+    values_m[~valid_mask] = 0.0
+
+    return DepthMap(
+        values_m=values_m,
+        valid_mask=valid_mask,
+    )
+
+
+def load_rgb(path: Path) -> np.ndarray:
+    """Load an RGB image as an HxWx3 uint8 array."""
+    image_bgr = cv2.imread(str(path), cv2.IMREAD_COLOR)
+
+    if image_bgr is None:
+        raise FileNotFoundError(f"Failed to read RGB image: {path}")
+
+    if image_bgr.ndim != 3 or image_bgr.shape[2] != 3:
+        raise ValueError(f"Expected three-channel RGB image, got {image_bgr.shape}")
+
+    if image_bgr.dtype != np.uint8:
+        raise ValueError(f"Expected uint8 RGB image, got {image_bgr.dtype}")
+
+    return cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+
+
+def load_semantic_mask(
+    path: Path,
+    classes: tuple[SemanticClass, ...],
+) -> np.ndarray:
+    """Load an RGB semantic mask and convert its colors to int64 class IDs."""
+    semantic_rgb = load_rgb(path)
+    class_ids = np.full(semantic_rgb.shape[:2], -1, dtype=np.int64)
+
+    for semantic_class in classes:
+        color = np.asarray(semantic_class.color, dtype=np.uint8)
+        matches = np.all(semantic_rgb == color, axis=2)
+        class_ids[matches] = semantic_class.class_id
+
+    unknown_mask = class_ids == -1
+
+    if np.any(unknown_mask):
+        unknown_colors = np.unique(
+            semantic_rgb[unknown_mask].reshape(-1, 3),
+            axis=0,
+        )
+        preview = unknown_colors[:5].tolist()
+        raise ValueError(
+            f"Found {len(unknown_colors)} unknown semantic colors in {path}: {preview}"
+        )
+
+    return class_ids

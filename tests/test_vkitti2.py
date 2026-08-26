@@ -1,9 +1,16 @@
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
-from perception_rt.data.vkitti2 import load_color_table, load_intrinsics
+from perception_rt.data.vkitti2 import (
+    load_color_table,
+    load_depth,
+    load_intrinsics,
+    load_rgb,
+    load_semantic_mask,
+)
 
 
 def write_color_table(path: Path, contents: str) -> Path:
@@ -14,10 +21,7 @@ def write_color_table(path: Path, contents: str) -> Path:
 def test_load_color_table_assigns_ordered_class_ids(tmp_path: Path) -> None:
     table_path = write_color_table(
         tmp_path / "colors.txt",
-        "Category r g b\n"
-        "Road 100 60 100\n"
-        "Sky 90 200 255\n"
-        "Undefined 0 0 0\n",
+        "Category r g b\nRoad 100 60 100\nSky 90 200 255\nUndefined 0 0 0\n",
     )
 
     classes = load_color_table(table_path)
@@ -30,8 +34,7 @@ def test_load_color_table_assigns_ordered_class_ids(tmp_path: Path) -> None:
 def test_load_color_table_rejects_invalid_rgb_value(tmp_path: Path) -> None:
     table_path = write_color_table(
         tmp_path / "colors.txt",
-        "Category r g b\n"
-        "Road 300 60 100\n",
+        "Category r g b\nRoad 300 60 100\n",
     )
 
     with pytest.raises(ValueError, match=r"outside \[0, 255\]"):
@@ -41,13 +44,12 @@ def test_load_color_table_rejects_invalid_rgb_value(tmp_path: Path) -> None:
 def test_load_color_table_rejects_duplicate_color(tmp_path: Path) -> None:
     table_path = write_color_table(
         tmp_path / "colors.txt",
-        "Category r g b\n"
-        "Road 100 60 100\n"
-        "AnotherClass 100 60 100\n",
+        "Category r g b\nRoad 100 60 100\nAnotherClass 100 60 100\n",
     )
 
     with pytest.raises(ValueError, match="Duplicate semantic color"):
         load_color_table(table_path)
+
 
 def test_load_intrinsics_builds_camera_matrix(tmp_path: Path) -> None:
     table_path = tmp_path / "intrinsic.txt"
@@ -86,3 +88,128 @@ def test_load_intrinsics_rejects_duplicate_entry(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Duplicate intrinsic entry"):
         load_intrinsics(table_path)
+
+
+def test_load_depth_converts_centimetres_to_metres(tmp_path: Path) -> None:
+    depth_path = tmp_path / "depth.png"
+    raw_depth = np.array(
+        [
+            [0, 394, 2500],
+            [65535, 10000, 1],
+        ],
+        dtype=np.uint16,
+    )
+    assert cv2.imwrite(str(depth_path), raw_depth)
+
+    depth = load_depth(depth_path)
+
+    assert depth.values_m.dtype == np.float32
+    assert depth.valid_mask.dtype == np.bool_
+
+    np.testing.assert_allclose(
+        depth.values_m,
+        [
+            [0.0, 3.94, 25.0],
+            [0.0, 100.0, 0.01],
+        ],
+    )
+    np.testing.assert_array_equal(
+        depth.valid_mask,
+        [
+            [False, True, True],
+            [False, True, True],
+        ],
+    )
+
+
+def test_load_depth_rejects_eight_bit_image(tmp_path: Path) -> None:
+    depth_path = tmp_path / "depth.png"
+    raw_depth = np.array([[10, 20]], dtype=np.uint8)
+    assert cv2.imwrite(str(depth_path), raw_depth)
+
+    with pytest.raises(ValueError, match="Expected uint16"):
+        load_depth(depth_path)
+
+
+def test_load_rgb_converts_opencv_bgr_to_rgb(tmp_path: Path) -> None:
+    image_path = tmp_path / "rgb.png"
+    expected_rgb = np.array(
+        [
+            [
+                [255, 0, 0],
+                [0, 255, 0],
+                [0, 0, 255],
+            ]
+        ],
+        dtype=np.uint8,
+    )
+    image_bgr = cv2.cvtColor(expected_rgb, cv2.COLOR_RGB2BGR)
+    assert cv2.imwrite(str(image_path), image_bgr)
+
+    loaded_rgb = load_rgb(image_path)
+
+    assert loaded_rgb.dtype == np.uint8
+    np.testing.assert_array_equal(loaded_rgb, expected_rgb)
+
+
+def test_load_rgb_rejects_missing_file(tmp_path: Path) -> None:
+    missing_path = tmp_path / "missing.jpg"
+
+    with pytest.raises(FileNotFoundError, match="Failed to read RGB"):
+        load_rgb(missing_path)
+
+
+def test_load_semantic_mask_converts_colors_to_class_ids(
+    tmp_path: Path,
+) -> None:
+    color_table_path = write_color_table(
+        tmp_path / "colors.txt",
+        "Category r g b\nRoad 100 60 100\nSky 90 200 255\nUndefined 0 0 0\n",
+    )
+    classes = load_color_table(color_table_path)
+
+    mask_path = tmp_path / "semantic.png"
+    semantic_rgb = np.array(
+        [
+            [
+                [100, 60, 100],
+                [90, 200, 255],
+            ],
+            [
+                [0, 0, 0],
+                [100, 60, 100],
+            ],
+        ],
+        dtype=np.uint8,
+    )
+    semantic_bgr = cv2.cvtColor(semantic_rgb, cv2.COLOR_RGB2BGR)
+    assert cv2.imwrite(str(mask_path), semantic_bgr)
+
+    class_ids = load_semantic_mask(mask_path, classes)
+
+    assert class_ids.dtype == np.int64
+    np.testing.assert_array_equal(
+        class_ids,
+        [
+            [0, 1],
+            [2, 0],
+        ],
+    )
+
+
+def test_load_semantic_mask_rejects_unknown_color(
+    tmp_path: Path,
+) -> None:
+    color_table_path = write_color_table(
+        tmp_path / "colors.txt",
+        "Category r g b\nRoad 100 60 100\n",
+    )
+    classes = load_color_table(color_table_path)
+
+    mask_path = tmp_path / "semantic.png"
+    unknown_rgb = np.array([[[1, 2, 3]]], dtype=np.uint8)
+    unknown_bgr = cv2.cvtColor(unknown_rgb, cv2.COLOR_RGB2BGR)
+    assert cv2.imwrite(str(mask_path), unknown_bgr)
+
+    with pytest.raises(ValueError, match="unknown semantic colors"):
+        load_semantic_mask(mask_path, classes)
