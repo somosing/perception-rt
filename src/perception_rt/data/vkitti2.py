@@ -60,6 +60,20 @@ class SamplePaths:
     semantic_path: Path
 
 
+@dataclass(frozen=True)
+class DatasetSplits:
+    """Leakage-safe train, validation, and test samples."""
+
+    train: tuple[SamplePaths, ...]
+    validation: tuple[SamplePaths, ...]
+    test: tuple[SamplePaths, ...]
+
+
+TRAIN_SCENES = frozenset({"Scene01", "Scene02", "Scene20"})
+VALIDATION_SCENES = frozenset({"Scene06"})
+TEST_SCENES = frozenset({"Scene18"})
+
+
 def load_color_table(path: Path) -> tuple[SemanticClass, ...]:
     """Load a Virtual KITTI 2 colors.txt file.
 
@@ -309,3 +323,32 @@ def discover_samples(
         )
 
     return tuple(samples)
+
+
+def split_samples_by_scene(
+    samples: tuple[SamplePaths, ...],
+) -> DatasetSplits:
+    """Split samples by physical scene to prevent cross-variation leakage."""
+    if not samples:
+        raise ValueError("Cannot split an empty sample collection")
+
+    configured_scenes = TRAIN_SCENES | VALIDATION_SCENES | TEST_SCENES
+    observed_scenes = {sample.scene for sample in samples}
+    unknown_scenes = observed_scenes - configured_scenes
+
+    if unknown_scenes:
+        unknown_text = ", ".join(sorted(unknown_scenes))
+        raise ValueError(f"Unconfigured scenes found: {unknown_text}")
+
+    train = tuple(sample for sample in samples if sample.scene in TRAIN_SCENES)
+    validation = tuple(sample for sample in samples if sample.scene in VALIDATION_SCENES)
+    test = tuple(sample for sample in samples if sample.scene in TEST_SCENES)
+
+    if not train or not validation or not test:
+        raise ValueError("Train, validation, and test splits must all contain samples")
+
+    return DatasetSplits(
+        train=train,
+        validation=validation,
+        test=test,
+    )

@@ -11,6 +11,7 @@ from perception_rt.data.vkitti2 import (
     load_intrinsics,
     load_rgb,
     load_semantic_mask,
+    split_samples_by_scene,
 )
 
 
@@ -259,3 +260,53 @@ def test_discover_samples_rejects_missing_pair(tmp_path: Path) -> None:
 
     with pytest.raises(FileNotFoundError, match="Missing paired modality"):
         discover_samples(tmp_path)
+
+
+def test_split_samples_by_scene_keeps_variations_together(
+    tmp_path: Path,
+) -> None:
+    create_sample_files(
+        tmp_path,
+        scene="Scene01",
+        variation="clone",
+    )
+    create_sample_files(
+        tmp_path,
+        scene="Scene01",
+        variation="rain",
+    )
+    create_sample_files(
+        tmp_path,
+        scene="Scene06",
+        variation="clone",
+    )
+    create_sample_files(
+        tmp_path,
+        scene="Scene18",
+        variation="clone",
+    )
+
+    samples = discover_samples(tmp_path)
+    splits = split_samples_by_scene(samples)
+
+    assert {sample.scene for sample in splits.train} == {"Scene01"}
+    assert {sample.variation for sample in splits.train} == {"clone", "rain"}
+    assert {sample.scene for sample in splits.validation} == {"Scene06"}
+    assert {sample.scene for sample in splits.test} == {"Scene18"}
+
+
+def test_split_samples_by_scene_rejects_unknown_scene(
+    tmp_path: Path,
+) -> None:
+    create_sample_files(
+        tmp_path,
+        scene="Scene99",
+        variation="clone",
+    )
+    create_sample_files(tmp_path, scene="Scene06")
+    create_sample_files(tmp_path, scene="Scene18")
+
+    samples = discover_samples(tmp_path)
+
+    with pytest.raises(ValueError, match="Unconfigured scenes.*Scene99"):
+        split_samples_by_scene(samples)
