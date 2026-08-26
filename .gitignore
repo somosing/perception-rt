@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Datasets and generated artifacts
+data/
+datasets/
+outputs/
+checkpoints/
+*.engine
+*.onnx
+
+# Logs and temporary files
+logs/
+*.log
+.DS_Store
