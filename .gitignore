@@ -13,14 +13,14 @@ __pycache__/
 .idea/
 
 # Datasets and generated artifacts
-data/
-datasets/
-outputs/
-checkpoints/
+/data/
+/datasets/
+/outputs/
+/checkpoints/
 *.engine
 *.onnx
 
 # Logs and temporary files
-logs/
+/logs/
 *.log
 .DS_Store
