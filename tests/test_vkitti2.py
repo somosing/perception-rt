@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from perception_rt.data.vkitti2 import (
+    discover_samples,
     load_color_table,
     load_depth,
     load_intrinsics,
@@ -213,3 +214,48 @@ def test_load_semantic_mask_rejects_unknown_color(
 
     with pytest.raises(ValueError, match="unknown semantic colors"):
         load_semantic_mask(mask_path, classes)
+
+
+def create_sample_files(
+    root: Path,
+    *,
+    scene: str = "Scene01",
+    variation: str = "clone",
+    frame: int = 0,
+    camera_id: int = 0,
+) -> None:
+    variation_root = root / scene / variation / "frames"
+
+    rgb_path = variation_root / "rgb" / f"Camera_{camera_id}" / f"rgb_{frame:05d}.jpg"
+    depth_path = variation_root / "depth" / f"Camera_{camera_id}" / f"depth_{frame:05d}.png"
+    semantic_path = (
+        variation_root / "classSegmentation" / f"Camera_{camera_id}" / f"classgt_{frame:05d}.png"
+    )
+
+    for path in (rgb_path, depth_path, semantic_path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+
+
+def test_discover_samples_builds_aligned_records(tmp_path: Path) -> None:
+    create_sample_files(tmp_path, frame=1)
+    create_sample_files(tmp_path, frame=0)
+
+    samples = discover_samples(tmp_path, camera_id=0)
+
+    assert len(samples) == 2
+    assert [sample.frame for sample in samples] == [0, 1]
+    assert samples[0].scene == "Scene01"
+    assert samples[0].variation == "clone"
+    assert samples[0].camera_id == 0
+    assert samples[0].depth_path.name == "depth_00000.png"
+    assert samples[0].semantic_path.name == "classgt_00000.png"
+
+
+def test_discover_samples_rejects_missing_pair(tmp_path: Path) -> None:
+    rgb_path = tmp_path / "Scene01" / "clone" / "frames" / "rgb" / "Camera_0" / "rgb_00000.jpg"
+    rgb_path.parent.mkdir(parents=True)
+    rgb_path.touch()
+
+    with pytest.raises(FileNotFoundError, match="Missing paired modality"):
+        discover_samples(tmp_path)

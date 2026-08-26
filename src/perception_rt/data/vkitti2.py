@@ -47,6 +47,19 @@ class DepthMap:
     valid_mask: np.ndarray
 
 
+@dataclass(frozen=True)
+class SamplePaths:
+    """Paths and identifiers for one aligned Virtual KITTI 2 sample."""
+
+    scene: str
+    variation: str
+    frame: int
+    camera_id: int
+    rgb_path: Path
+    depth_path: Path
+    semantic_path: Path
+
+
 def load_color_table(path: Path) -> tuple[SemanticClass, ...]:
     """Load a Virtual KITTI 2 colors.txt file.
 
@@ -233,3 +246,66 @@ def load_semantic_mask(
         )
 
     return class_ids
+
+
+def discover_samples(
+    root: Path,
+    camera_id: int = 0,
+) -> tuple[SamplePaths, ...]:
+    """Discover aligned RGB, depth, and semantic samples."""
+    if camera_id not in (0, 1):
+        raise ValueError(f"Camera ID must be 0 or 1, got {camera_id}")
+
+    pattern = f"Scene*/*/frames/rgb/Camera_{camera_id}/rgb_*.jpg"
+    rgb_paths = sorted(root.glob(pattern))
+
+    if not rgb_paths:
+        raise FileNotFoundError(f"No Camera_{camera_id} RGB images found below {root}")
+
+    samples: list[SamplePaths] = []
+
+    for rgb_path in rgb_paths:
+        variation_directory = rgb_path.parents[3]
+        scene_directory = rgb_path.parents[4]
+
+        frame_text = rgb_path.stem.removeprefix("rgb_")
+
+        try:
+            frame = int(frame_text)
+        except ValueError as error:
+            raise ValueError(f"Invalid RGB frame name: {rgb_path.name}") from error
+
+        depth_path = (
+            variation_directory
+            / "frames"
+            / "depth"
+            / f"Camera_{camera_id}"
+            / f"depth_{frame:05d}.png"
+        )
+        semantic_path = (
+            variation_directory
+            / "frames"
+            / "classSegmentation"
+            / f"Camera_{camera_id}"
+            / f"classgt_{frame:05d}.png"
+        )
+
+        missing_paths = [path for path in (depth_path, semantic_path) if not path.is_file()]
+
+        if missing_paths:
+            missing_text = ", ".join(str(path) for path in missing_paths)
+            raise FileNotFoundError(f"Missing paired modality for {rgb_path}: {missing_text}")
+
+        samples.append(
+            SamplePaths(
+                scene=scene_directory.name,
+                variation=variation_directory.name,
+                frame=frame,
+                camera_id=camera_id,
+                rgb_path=rgb_path,
+                depth_path=depth_path,
+                semantic_path=semantic_path,
+            )
+        )
+
+    return tuple(samples)
