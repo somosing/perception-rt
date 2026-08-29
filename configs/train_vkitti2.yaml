@@ -10,6 +10,7 @@ maximum_depth_m: 200.0
 encoder_checkpoint: nvidia/mit-b2
 decoder_channels: 128
 number_of_classes: 15
+semantic_class_weights_path: configs/vkitti2_class_weights.yaml
 
 batch_size: 2
 number_of_workers: 2

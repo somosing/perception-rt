@@ -22,6 +22,7 @@ class TrainingConfig:
     encoder_checkpoint: str
     decoder_channels: int
     number_of_classes: int
+    semantic_class_weights_path: Path | None
 
     batch_size: int
     number_of_workers: int
@@ -119,6 +120,10 @@ def load_training_config(path: Path) -> TrainingConfig:
     converted: dict[str, Any] = dict(contents)
     converted["dataset_root"] = Path(converted["dataset_root"])
     converted["output_directory"] = Path(converted["output_directory"])
+    weights_path = converted["semantic_class_weights_path"]
+
+    if weights_path is not None:
+        converted["semantic_class_weights_path"] = Path(weights_path)
 
     config = TrainingConfig(**converted)
     config.validate()

@@ -164,6 +164,8 @@ def evaluate(
     loader: DataLoader,
     device: torch.device,
     config: TrainingConfig,
+    *,
+    class_weights: torch.Tensor | None = None,
 ) -> dict[str, float]:
     """Evaluate mean loss components without gradient tracking."""
     model.eval()
@@ -188,6 +190,7 @@ def evaluate(
                     tensors["semantic"],
                     tensors["depth_m"],
                     tensors["depth_valid"],
+                    class_weights=class_weights,
                     semantic_weight=config.semantic_loss_weight,
                     depth_weight=config.depth_loss_weight,
                     gradient_weight=config.gradient_loss_weight,

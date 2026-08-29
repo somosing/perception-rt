@@ -26,6 +26,7 @@ def test_serialize_config_converts_paths() -> None:
         encoder_checkpoint="test",
         decoder_channels=16,
         number_of_classes=15,
+        semantic_class_weights_path=None,
         batch_size=2,
         number_of_workers=0,
         epochs=1,

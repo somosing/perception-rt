@@ -23,6 +23,9 @@ from perception_rt.training.engine import (
     seed_everything,
 )
 from perception_rt.training.losses import multitask_loss
+from perception_rt.training.weights import (
+    load_semantic_class_weights,
+)
 
 
 def accumulation_window_size(
@@ -68,6 +71,19 @@ def train(
         validation_sample_limit=validation_sample_limit,
         overfit_sample_count=overfit_sample_count,
     )
+
+    class_weights = None
+
+    if config.semantic_class_weights_path is not None:
+        class_weights = load_semantic_class_weights(
+            config.semantic_class_weights_path,
+            loaders.classes,
+            device=device,
+        )
+        print(
+            "Loaded semantic class weights:",
+            config.semantic_class_weights_path,
+        )
 
     model = PerceptionRTModel.from_pretrained(
         config.encoder_checkpoint,
@@ -170,6 +186,7 @@ def train(
                     semantic_weight=config.semantic_loss_weight,
                     depth_weight=config.depth_loss_weight,
                     gradient_weight=config.gradient_loss_weight,
+                    class_weights=class_weights,
                 )
                 backward_loss = losses["total"] / window_size
 
@@ -242,6 +259,7 @@ def train(
                 loaders.validation,
                 device,
                 config,
+                class_weights=class_weights,
             )
             append_history(
                 history_path,

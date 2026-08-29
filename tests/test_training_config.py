@@ -21,6 +21,7 @@ def valid_config() -> TrainingConfig:
         encoder_checkpoint="nvidia/mit-b2",
         decoder_channels=128,
         number_of_classes=15,
+        semantic_class_weights_path=None,
         batch_size=2,
         number_of_workers=2,
         epochs=30,
