@@ -21,8 +21,17 @@ from perception_rt.data.vkitti2 import (
 from perception_rt.models.multitask import PerceptionRTModel
 from perception_rt.training.config import TrainingConfig
 from perception_rt.training.losses import multitask_loss
+from perception_rt.training.metrics import DenseMetricAccumulator
 
 LOSS_NAMES = ("total", "semantic", "depth_nll", "depth_gradient")
+METRIC_NAMES = (
+    "mean_iou",
+    "depth_abs_rel",
+    "depth_rmse_m",
+    "depth_delta1",
+    "uncertainty_error_pearson",
+)
+HISTORY_NAMES = (*LOSS_NAMES, *METRIC_NAMES)
 
 
 @dataclass(frozen=True)
@@ -171,6 +180,10 @@ def evaluate(
     model.eval()
     sums = {name: 0.0 for name in LOSS_NAMES}
     sample_count = 0
+    metrics = DenseMetricAccumulator(
+        config.number_of_classes,
+        maximum_depth_m=config.maximum_depth_m,
+    )
 
     with torch.inference_mode():
         for batch in loader:
@@ -196,6 +209,15 @@ def evaluate(
                     gradient_weight=config.gradient_loss_weight,
                 )
 
+                metrics.update(
+                    output["semantic_logits"],
+                    output["log_depth"],
+                    output["depth_log_scale"],
+                    tensors["semantic"],
+                    tensors["depth_m"],
+                    tensors["depth_valid"],
+                )
+
             for name in LOSS_NAMES:
                 sums[name] += float(losses[name].detach()) * batch_size
 
@@ -204,7 +226,12 @@ def evaluate(
     if sample_count == 0:
         raise ValueError("Validation loader produced no samples")
 
-    return {name: value / sample_count for name, value in sums.items()}
+    mean_losses = {name: value / sample_count for name, value in sums.items()}
+
+    return {
+        **mean_losses,
+        **metrics.compute(),
+    }
 
 
 def save_checkpoint(
@@ -272,7 +299,7 @@ def append_history(
         "epoch",
         "global_step",
         "split",
-        *LOSS_NAMES,
+        *HISTORY_NAMES,
     ]
     write_header = not path.exists()
 

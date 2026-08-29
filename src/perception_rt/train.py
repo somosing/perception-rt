@@ -234,7 +234,6 @@ def train(
                     f"{float(losses['depth_gradient'].detach()):.4f}, "
                     f"scale={scale_after:.0f}"
                 )
-
             if config.maximum_steps is not None and global_step >= config.maximum_steps:
                 stop_training = True
                 break
@@ -274,8 +273,13 @@ def train(
                 f"total={validation_losses['total']:.4f}, "
                 f"semantic={validation_losses['semantic']:.4f}, "
                 f"depth={validation_losses['depth_nll']:.4f}, "
-                f"gradient="
-                f"{validation_losses['depth_gradient']:.4f}"
+                f"gradient={validation_losses['depth_gradient']:.4f}, "
+                f"mIoU={validation_losses['mean_iou']:.4f}, "
+                f"AbsRel={validation_losses['depth_abs_rel']:.4f}, "
+                f"RMSE={validation_losses['depth_rmse_m']:.2f}m, "
+                f"delta1={validation_losses['depth_delta1']:.4f}, "
+                f"uncertainty_r="
+                f"{validation_losses['uncertainty_error_pearson']:.4f}"
             )
 
             is_best = validation_losses["total"] < best_validation_loss
