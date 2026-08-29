@@ -192,6 +192,7 @@ def build_loaders(
         crop_size=config.crop_size,
         maximum_depth_m=config.maximum_depth_m,
         training=use_training_augmentation,
+        photometric_jitter_strength=(config.photometric_jitter_strength),
     )
     validation_dataset = VirtualKitti2Dataset(
         validation_samples,

@@ -18,6 +18,7 @@ def valid_config() -> TrainingConfig:
         crop_height=320,
         crop_width=640,
         maximum_depth_m=200.0,
+        photometric_jitter_strength=0.2,
         encoder_checkpoint="nvidia/mit-b2",
         decoder_channels=128,
         number_of_classes=15,

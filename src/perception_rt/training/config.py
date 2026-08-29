@@ -18,6 +18,7 @@ class TrainingConfig:
     crop_height: int
     crop_width: int
     maximum_depth_m: float
+    photometric_jitter_strength: float
 
     encoder_checkpoint: str
     decoder_channels: int
@@ -71,6 +72,9 @@ class TrainingConfig:
 
         if self.number_of_workers < 0:
             raise ValueError("number_of_workers cannot be negative")
+
+        if not 0.0 <= self.photometric_jitter_strength <= 1.0:
+            raise ValueError("photometric_jitter_strength must be between 0 and 1")
 
         if self.warmup_steps < 0:
             raise ValueError("warmup_steps cannot be negative")

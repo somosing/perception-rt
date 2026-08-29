@@ -23,6 +23,7 @@ def test_serialize_config_converts_paths() -> None:
         crop_height=32,
         crop_width=64,
         maximum_depth_m=200.0,
+        photometric_jitter_strength=0.2,
         encoder_checkpoint="test",
         decoder_channels=16,
         number_of_classes=15,

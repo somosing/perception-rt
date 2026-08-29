@@ -55,6 +55,7 @@ def make_dataset(
     training: bool = False,
     crop_size: tuple[int, int] = (2, 4),
     flip_probability: float = 0.5,
+    jitter_strength: float = 0.0,
 ) -> VirtualKitti2Dataset:
     loaded = make_loaded_sample()
     monkeypatch.setattr(
@@ -71,6 +72,7 @@ def make_dataset(
         maximum_depth_m=200.0,
         training=training,
         horizontal_flip_probability=flip_probability,
+        photometric_jitter_strength=jitter_strength,
     )
 
 
@@ -164,3 +166,46 @@ def test_dataset_rejects_crop_larger_than_sample(
 
     with pytest.raises(ValueError, match="exceeds sample shape"):
         dataset[0]
+
+
+def test_photometric_jitter_is_reproducible_and_target_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    baseline = make_dataset(
+        monkeypatch,
+        crop_size=(4, 6),
+    )[0]
+    dataset = make_dataset(
+        monkeypatch,
+        training=True,
+        crop_size=(4, 6),
+        flip_probability=0.0,
+        jitter_strength=0.4,
+    )
+
+    torch.manual_seed(123)
+    first = dataset[0]
+    torch.manual_seed(123)
+    second = dataset[0]
+
+    assert not torch.allclose(
+        first["image"],
+        baseline["image"],
+    )
+    torch.testing.assert_close(
+        first["image"],
+        second["image"],
+    )
+    torch.testing.assert_close(
+        first["depth_m"],
+        baseline["depth_m"],
+    )
+    torch.testing.assert_close(
+        first["depth_valid"],
+        baseline["depth_valid"],
+    )
+    torch.testing.assert_close(
+        first["semantic"],
+        baseline["semantic"],
+    )
+    assert torch.isfinite(first["image"]).all()

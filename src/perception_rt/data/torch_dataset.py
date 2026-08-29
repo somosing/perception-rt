@@ -41,6 +41,7 @@ class VirtualKitti2Dataset(Dataset[TrainingSample]):
         maximum_depth_m: float = 200.0,
         training: bool = False,
         horizontal_flip_probability: float = 0.5,
+        photometric_jitter_strength: float = 0.0,
     ) -> None:
         if not samples:
             raise ValueError("Dataset requires at least one sample")
@@ -56,12 +57,16 @@ class VirtualKitti2Dataset(Dataset[TrainingSample]):
         if not 0.0 <= horizontal_flip_probability <= 1.0:
             raise ValueError("Flip probability must be within [0, 1]")
 
+        if not 0.0 <= photometric_jitter_strength <= 1.0:
+            raise ValueError("Photometric jitter strength must be within [0, 1]")
+
         self.samples = tuple(samples)
         self.classes = classes
         self.crop_size = crop_size
         self.maximum_depth_m = maximum_depth_m
         self.training = training
         self.horizontal_flip_probability = horizontal_flip_probability
+        self.photometric_jitter_strength = photometric_jitter_strength
 
         self._mean = torch.tensor(IMAGENET_MEAN, dtype=torch.float32).view(3, 1, 1)
         self._std = torch.tensor(IMAGENET_STD, dtype=torch.float32).view(3, 1, 1)
@@ -94,6 +99,10 @@ class VirtualKitti2Dataset(Dataset[TrainingSample]):
             semantic = torch.flip(semantic, dims=(-1,))
 
         image = image.to(torch.float32).div(255.0)
+
+        if self.training and self.photometric_jitter_strength > 0.0:
+            image = self._apply_photometric_jitter(image)
+
         image = (image - self._mean) / self._std
 
         depth_m = depth_m.to(torch.float32)
@@ -113,6 +122,31 @@ class VirtualKitti2Dataset(Dataset[TrainingSample]):
             variation=paths.variation,
             frame=paths.frame,
         )
+
+    def _apply_photometric_jitter(
+        self,
+        image: Tensor,
+    ) -> Tensor:
+        """Randomly perturb RGB appearance without changing targets."""
+        strength = self.photometric_jitter_strength
+
+        brightness = 1.0 + (2.0 * torch.rand(()) - 1.0) * strength
+        contrast = 1.0 + (2.0 * torch.rand(()) - 1.0) * strength
+        saturation = 1.0 + (2.0 * torch.rand(()) - 1.0) * strength
+
+        image = image * brightness
+
+        channel_mean = image.mean(
+            dim=(-2, -1),
+            keepdim=True,
+        )
+        image = (image - channel_mean) * contrast + channel_mean
+
+        luminance_weights = image.new_tensor((0.2989, 0.5870, 0.1140)).view(3, 1, 1)
+        grayscale = (image * luminance_weights).sum(dim=0, keepdim=True)
+        image = (image - grayscale) * saturation + grayscale
+
+        return image.clamp(0.0, 1.0)
 
     def _crop(
         self,
