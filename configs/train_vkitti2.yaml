@@ -1,0 +1,32 @@
+seed: 42
+
+dataset_root: datasets/vkitti2/raw
+output_directory: outputs/training/vkitti2_multitask
+
+crop_height: 320
+crop_width: 640
+maximum_depth_m: 200.0
+
+encoder_checkpoint: nvidia/mit-b2
+decoder_channels: 128
+number_of_classes: 15
+
+batch_size: 2
+number_of_workers: 2
+epochs: 30
+maximum_steps: null
+
+learning_rate: 0.0002
+weight_decay: 0.01
+gradient_accumulation_steps: 4
+gradient_clip_norm: 1.0
+
+use_amp: true
+amp_initial_scale: 1024.0
+
+semantic_loss_weight: 1.0
+depth_loss_weight: 1.0
+gradient_loss_weight: 0.5
+
+log_every_steps: 10
+validate_every_epochs: 1
