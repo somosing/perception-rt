@@ -33,6 +33,8 @@ def test_serialize_config_converts_paths() -> None:
         maximum_steps=1,
         learning_rate=2e-4,
         weight_decay=1e-2,
+        warmup_steps=500,
+        minimum_learning_rate_ratio=0.05,
         gradient_accumulation_steps=4,
         gradient_clip_norm=1.0,
         use_amp=True,

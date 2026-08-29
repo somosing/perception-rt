@@ -31,6 +31,8 @@ class TrainingConfig:
 
     learning_rate: float
     weight_decay: float
+    warmup_steps: int
+    minimum_learning_rate_ratio: float
     gradient_accumulation_steps: int
     gradient_clip_norm: float
 
@@ -69,6 +71,12 @@ class TrainingConfig:
 
         if self.number_of_workers < 0:
             raise ValueError("number_of_workers cannot be negative")
+
+        if self.warmup_steps < 0:
+            raise ValueError("warmup_steps cannot be negative")
+
+        if not 0.0 <= self.minimum_learning_rate_ratio <= 1.0:
+            raise ValueError("minimum_learning_rate_ratio must be between 0 and 1")
 
         if self.maximum_steps is not None and self.maximum_steps <= 0:
             raise ValueError("maximum_steps must be positive when provided")

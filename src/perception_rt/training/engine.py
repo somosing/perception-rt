@@ -1,6 +1,7 @@
 """Reusable data, validation and checkpoint utilities for training."""
 
 import csv
+import math
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,79 @@ METRIC_NAMES = (
     "uncertainty_error_pearson",
 )
 HISTORY_NAMES = (*LOSS_NAMES, *METRIC_NAMES)
+
+
+def optimizer_step_count(
+    *,
+    batches_per_epoch: int,
+    epochs: int,
+    accumulation_steps: int,
+    maximum_steps: int | None,
+) -> int:
+    """Calculate the number of optimizer updates."""
+    if batches_per_epoch <= 0:
+        raise ValueError("batches_per_epoch must be positive")
+
+    if epochs <= 0:
+        raise ValueError("epochs must be positive")
+
+    if accumulation_steps <= 0:
+        raise ValueError("accumulation_steps must be positive")
+
+    steps_per_epoch = math.ceil(batches_per_epoch / accumulation_steps)
+    planned_steps = steps_per_epoch * epochs
+
+    if maximum_steps is None:
+        return planned_steps
+
+    if maximum_steps <= 0:
+        raise ValueError("maximum_steps must be positive")
+
+    return min(maximum_steps, planned_steps)
+
+
+def build_warmup_cosine_scheduler(
+    optimizer: torch.optim.Optimizer,
+    *,
+    total_steps: int,
+    warmup_steps: int,
+    minimum_learning_rate_ratio: float,
+) -> torch.optim.lr_scheduler.LambdaLR:
+    """Create linear warmup followed by cosine decay."""
+    if total_steps <= 0:
+        raise ValueError("total_steps must be positive")
+
+    if warmup_steps < 0:
+        raise ValueError("warmup_steps cannot be negative")
+
+    if not 0.0 <= minimum_learning_rate_ratio <= 1.0:
+        raise ValueError("minimum_learning_rate_ratio must be between 0 and 1")
+
+    effective_warmup = min(warmup_steps, total_steps)
+
+    def multiplier(step: int) -> float:
+        if effective_warmup > 0 and step < effective_warmup:
+            return (step + 1) / effective_warmup
+
+        decay_steps = total_steps - effective_warmup
+
+        if decay_steps <= 0:
+            return 1.0
+
+        if effective_warmup == 0:
+            progress = step / max(total_steps - 1, 1)
+        else:
+            progress = (step - effective_warmup + 1) / decay_steps
+
+        progress = min(max(progress, 0.0), 1.0)
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+
+        return minimum_learning_rate_ratio + (1.0 - minimum_learning_rate_ratio) * cosine
+
+    return torch.optim.lr_scheduler.LambdaLR(
+        optimizer,
+        multiplier,
+    )
 
 
 @dataclass(frozen=True)
@@ -239,6 +313,7 @@ def save_checkpoint(
     *,
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
     scaler: torch.amp.GradScaler,
     epoch: int,
     global_step: int,
@@ -250,6 +325,7 @@ def save_checkpoint(
         {
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
             "scaler": scaler.state_dict(),
             "epoch": epoch,
             "global_step": global_step,
@@ -264,6 +340,7 @@ def restore_checkpoint(
     *,
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
     scaler: torch.amp.GradScaler,
     device: torch.device,
 ) -> tuple[int, int, float]:
@@ -276,6 +353,7 @@ def restore_checkpoint(
 
     model.load_state_dict(checkpoint["model"])
     optimizer.load_state_dict(checkpoint["optimizer"])
+    scheduler.load_state_dict(checkpoint["scheduler"])
     scaler.load_state_dict(checkpoint["scaler"])
 
     return (

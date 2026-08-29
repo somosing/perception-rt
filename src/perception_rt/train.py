@@ -16,8 +16,10 @@ from perception_rt.training.engine import (
     LOSS_NAMES,
     append_history,
     build_loaders,
+    build_warmup_cosine_scheduler,
     evaluate,
     move_batch_to_device,
+    optimizer_step_count,
     restore_checkpoint,
     save_checkpoint,
     seed_everything,
@@ -96,6 +98,18 @@ def train(
         lr=config.learning_rate,
         weight_decay=config.weight_decay,
     )
+    total_steps = optimizer_step_count(
+        batches_per_epoch=len(loaders.train),
+        epochs=config.epochs,
+        accumulation_steps=config.gradient_accumulation_steps,
+        maximum_steps=config.maximum_steps,
+    )
+    scheduler = build_warmup_cosine_scheduler(
+        optimizer,
+        total_steps=total_steps,
+        warmup_steps=config.warmup_steps,
+        minimum_learning_rate_ratio=(config.minimum_learning_rate_ratio),
+    )
     scaler = torch.amp.GradScaler(
         "cuda",
         enabled=config.use_amp,
@@ -136,6 +150,7 @@ def train(
             resume_path,
             model=model,
             optimizer=optimizer,
+            scheduler=scheduler,
             scaler=scaler,
             device=device,
         )
@@ -146,6 +161,11 @@ def train(
     print(
         "Effective batch size:",
         config.batch_size * config.gradient_accumulation_steps,
+    )
+    print(f"Planned optimizer steps: {total_steps}")
+    print(
+        "Warmup optimizer steps:",
+        min(config.warmup_steps, total_steps),
     )
 
     stop_training = False
@@ -222,6 +242,7 @@ def train(
                 continue
 
             global_step += 1
+            scheduler.step()
 
             if global_step % config.log_every_steps == 0:
                 print(
@@ -232,7 +253,8 @@ def train(
                     f"depth={float(losses['depth_nll'].detach()):.4f}, "
                     f"gradient="
                     f"{float(losses['depth_gradient'].detach()):.4f}, "
-                    f"scale={scale_after:.0f}"
+                    f"scale={scale_after:.0f}, "
+                    f"lr={optimizer.param_groups[0]['lr']:.2e}"
                 )
             if config.maximum_steps is not None and global_step >= config.maximum_steps:
                 stop_training = True
@@ -293,6 +315,7 @@ def train(
             latest_checkpoint,
             model=model,
             optimizer=optimizer,
+            scheduler=scheduler,
             scaler=scaler,
             epoch=epoch,
             global_step=global_step,
@@ -304,6 +327,7 @@ def train(
                 best_checkpoint,
                 model=model,
                 optimizer=optimizer,
+                scheduler=scheduler,
                 scaler=scaler,
                 epoch=epoch,
                 global_step=global_step,
