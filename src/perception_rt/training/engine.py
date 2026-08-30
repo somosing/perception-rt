@@ -250,18 +250,29 @@ def evaluate(
     config: TrainingConfig,
     *,
     class_weights: torch.Tensor | None = None,
+    metric_accumulator: DenseMetricAccumulator | None = None,
+    progress_every_batches: int = 0,
 ) -> dict[str, float]:
-    """Evaluate mean loss components without gradient tracking."""
+    """Evaluate mean losses and dense prediction metrics."""
+    if progress_every_batches < 0:
+        raise ValueError("progress_every_batches cannot be negative")
+
     model.eval()
     sums = {name: 0.0 for name in LOSS_NAMES}
     sample_count = 0
-    metrics = DenseMetricAccumulator(
-        config.number_of_classes,
-        maximum_depth_m=config.maximum_depth_m,
-    )
+    metrics = metric_accumulator
+
+    if metrics is None:
+        metrics = DenseMetricAccumulator(
+            config.number_of_classes,
+            maximum_depth_m=config.maximum_depth_m,
+        )
 
     with torch.inference_mode():
-        for batch in loader:
+        for batch_index, batch in enumerate(
+            loader,
+            start=1,
+        ):
             tensors = move_batch_to_device(batch, device)
             batch_size = tensors["image"].shape[0]
 
@@ -297,6 +308,11 @@ def evaluate(
                 sums[name] += float(losses[name].detach()) * batch_size
 
             sample_count += batch_size
+
+            if progress_every_batches > 0 and (
+                batch_index % progress_every_batches == 0 or batch_index == len(loader)
+            ):
+                print(f"Evaluated {batch_index}/{len(loader)} batches")
 
     if sample_count == 0:
         raise ValueError("Validation loader produced no samples")
