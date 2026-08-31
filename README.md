@@ -22,20 +22,21 @@ complete pipeline can be deployed efficiently on NVIDIA hardware.
 
 ## Current status
 
-### v0.1.0 — Dataset foundation
+### v0.2.0 release candidate — Multitask perception baseline
 
-- [x] Python project environment
-- [x] CUDA-enabled PyTorch verification
-- [x] Unit-test and lint configuration
-- [x] Virtual KITTI 2 metadata parsing
-- [x] RGB, metric-depth, and semantic-label decoding
-- [x] Aligned multimodal sample indexing and loading
-- [x] Leakage-safe scene-based dataset splits
-- [x] Multimodal sample visualization
-- [x] Dataset-wide integrity and statistics audit
+- [x] Training-ready PyTorch dataset
+- [x] Shared MiT-B2 encoder with semantic, metric-depth and uncertainty decoders
+- [x] Class-weighted semantic and uncertainty-aware depth losses
+- [x] Mixed-precision training with gradient accumulation and checkpointing
+- [x] Validation-based best-checkpoint selection
+- [x] Held-out Scene18 evaluation
+- [x] Qualitative prediction visualization
+- [x] 52 passing tests
 
-Model development has not started yet. This release establishes a tested and
-reproducible dataset foundation.
+The official `best.pt` checkpoint was selected on Scene06 validation data and
+evaluated on the untouched Scene18 test split. See
+[`docs/vkitti2_results.md`](docs/vkitti2_results.md) for the complete protocol,
+results and limitations.
 
 ## Dataset strategy
 
@@ -151,6 +152,43 @@ Splits are separated by physical scene:
 All variations of an underlying scene and frame remain in the same split. This
 prevents synthetic weather or viewpoint variants from leaking between training and
 evaluation.
+## Multitask baseline
+
+PerceptionRT uses an ImageNet-pretrained MiT-B2 encoder with separate multi-scale
+decoders for 15-class semantic segmentation, metric log-depth and learned
+log-depth uncertainty.
+
+The validation-selected `best.pt` checkpoint from epoch 16 produced the following
+results on all 3,390 held-out Scene18 samples:
+
+| Metric | Result |
+|---|---:|
+| Semantic mIoU | 0.7526 |
+| Depth AbsRel | 0.1876 |
+| Depth RMSE | 17.51 m |
+| Depth delta1 | 0.6604 |
+| Uncertainty/error Pearson correlation | 0.2501 |
+
+Train the baseline:
+
+    python -m perception_rt.train \
+        --config configs/train_vkitti2.yaml
+
+Evaluate the official checkpoint:
+
+    python -m perception_rt.evaluate \
+        --config configs/train_vkitti2.yaml \
+        --checkpoints outputs/training/vkitti2_multitask/best.pt \
+        --output outputs/evaluation/vkitti2_test.json
+
+Generate held-out qualitative predictions:
+
+    python -m perception_rt.qualitative \
+        --config configs/train_vkitti2.yaml \
+        --checkpoint outputs/training/vkitti2_multitask/best.pt
+
+Detailed methodology, checkpoint-selection rules and limitations are documented
+in [`docs/vkitti2_results.md`](docs/vkitti2_results.md).
 
 ## Development environment
 
