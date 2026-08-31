@@ -22,7 +22,7 @@ complete pipeline can be deployed efficiently on NVIDIA hardware.
 
 ## Current status
 
-### v0.2.0 release candidate — Multitask perception baseline
+### v0.2.0 — Multitask perception baseline
 
 - [x] Training-ready PyTorch dataset
 - [x] Shared MiT-B2 encoder with semantic, metric-depth and uncertainty decoders
