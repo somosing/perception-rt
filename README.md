@@ -22,7 +22,7 @@ complete pipeline can be deployed efficiently on NVIDIA hardware.
 
 ## Current status
 
-### v0.4.0 release candidate — TensorRT FP32 deployment baseline
+### v0.4.0 — TensorRT FP32 deployment baseline
 
 - [x] Strongly typed static FP32 TensorRT engine builder
 - [x] Validated four-tensor deployment contract

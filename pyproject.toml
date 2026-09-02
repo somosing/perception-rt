@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "perception-rt"
-version = "0.3.0"
+version = "0.4.0"
 description = "Reliability-aware 3D vision for autonomous robots"
 license = "Apache-2.0"
 requires-python = ">=3.12,<3.13"
