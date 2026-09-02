@@ -22,7 +22,7 @@ complete pipeline can be deployed efficiently on NVIDIA hardware.
 
 ## Current status
 
-### v0.3.0 release candidate — ONNX deployment baseline
+### v0.3.0 — ONNX deployment baseline
 
 - [x] Static batch-one FP32 ONNX export
 - [x] Stable three-output deployment contract
