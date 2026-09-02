@@ -29,6 +29,10 @@ export = [
     "onnxscript==0.7.1",
 ]
 
+tensorrt = [
+    "tensorrt-cu13==11.2.1.2",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

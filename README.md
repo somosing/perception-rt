@@ -22,6 +22,24 @@ complete pipeline can be deployed efficiently on NVIDIA hardware.
 
 ## Current status
 
+### v0.4.0 release candidate — TensorRT FP32 deployment baseline
+
+- [x] Strongly typed static FP32 TensorRT engine builder
+- [x] Validated four-tensor deployment contract
+- [x] Native TensorRT CUDA inference
+- [x] Reusable device-resident output buffers
+- [x] Dedicated non-default CUDA stream
+- [x] Held-out Scene18 PyTorch–TensorRT parity validation
+- [x] Reproducible PyTorch, ONNX Runtime and TensorRT benchmark
+- [x] 92 passing tests
+
+The TensorRT engine passed direct PyTorch parity on five deterministic
+held-out Scene18 samples. On an RTX 3060 Laptop GPU it achieved `16.579 ms`
+mean latency and `60.32 FPS`, a `1.404×` speedup over PyTorch and `1.603×`
+over ONNX Runtime CUDA. See
+[`docs/tensorrt_inference.md`](docs/tensorrt_inference.md) for the complete
+protocol, results and limitations.
+
 ### v0.3.0 — ONNX deployment baseline
 
 - [x] Static batch-one FP32 ONNX export
@@ -240,6 +258,49 @@ normalized inputs.
 
 The complete contract, measurements, thresholds and limitations are documented
 in [`docs/onnx_export.md`](docs/onnx_export.md).
+
+## TensorRT FP32 deployment
+
+Install the pinned deployment dependencies:
+
+~~~bash
+python -m pip install -e ".[dev,export,tensorrt]"
+~~~
+
+Build the static FP32 engine from the validated ONNX model:
+
+~~~bash
+python -m perception_rt.build_tensorrt
+~~~
+
+Run held-out PyTorch–TensorRT parity validation:
+
+~~~bash
+python -m perception_rt.validate_tensorrt
+~~~
+
+Run the three-backend device-resident benchmark:
+
+~~~bash
+python -m perception_rt.benchmark_inference
+~~~
+
+The generated engine is approximately `134.60 MiB`. It uses a static
+batch-one `1 × 3 × 320 × 640` FP32 input and produces semantic logits,
+metric log-depth and uncertainty log-scale.
+
+| Backend | Mean latency | P95 latency | Throughput |
+|---|---:|---:|---:|
+| PyTorch FP32 | 23.279 ms | 23.735 ms | 42.96 FPS |
+| ONNX Runtime CUDA FP32 | 26.575 ms | 26.967 ms | 37.63 FPS |
+| TensorRT FP32 | 16.579 ms | 17.087 ms | 60.32 FPS |
+
+TensorRT speedup was `1.404×` over PyTorch and `1.603×` over ONNX Runtime
+CUDA. Model loading, preprocessing and host-device transfer were excluded.
+
+Detailed engine construction, parity criteria, benchmark methodology and
+hardware limitations are documented in
+[`docs/tensorrt_inference.md`](docs/tensorrt_inference.md).
 
 ## Development environment
 
