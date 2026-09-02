@@ -205,3 +205,42 @@ def test_compare_output_sets_enforces_semantic_gate() -> None:
     assert result["outputs_within_tolerance"] is True
     assert result["semantic_argmax_agreement"] == 0.0
     assert result["passed"] is False
+
+
+def test_uncertainty_scale_supports_log_equivalent_tolerance() -> None:
+    reference = {
+        "semantic_logits": np.array(
+            [[[[2.0]], [[1.0]]]],
+            dtype=np.float32,
+        ),
+        "log_depth": np.zeros(
+            (1, 1, 1, 1),
+            dtype=np.float32,
+        ),
+        "depth_log_scale": np.full(
+            (1, 1, 1, 1),
+            5.0,
+            dtype=np.float32,
+        ),
+    }
+    candidate = {name: value.copy() for name, value in reference.items()}
+    candidate["depth_log_scale"] += 0.015
+
+    strict = compare_output_sets(
+        reference,
+        candidate,
+        maximum_depth_m=200.0,
+        absolute_tolerance=0.02,
+        relative_tolerance=0.0,
+    )
+    log_equivalent = compare_output_sets(
+        reference,
+        candidate,
+        maximum_depth_m=200.0,
+        absolute_tolerance=0.02,
+        relative_tolerance=0.0,
+        uncertainty_relative_tolerance=np.expm1(0.02),
+    )
+
+    assert strict["passed"] is False
+    assert log_equivalent["passed"] is True

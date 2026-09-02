@@ -89,6 +89,7 @@ def compare_output_sets(
     maximum_depth_m: float,
     absolute_tolerance: float = DEFAULT_ABSOLUTE_TOLERANCE,
     relative_tolerance: float = DEFAULT_RELATIVE_TOLERANCE,
+    uncertainty_relative_tolerance: float | None = None,
     minimum_semantic_agreement: float = DEFAULT_MINIMUM_SEMANTIC_AGREEMENT,
 ) -> dict[str, object]:
     """Compare every raw and post-processed deployment output."""
@@ -107,6 +108,12 @@ def compare_output_sets(
 
     if maximum_depth_m <= 0.0:
         raise ValueError("Maximum depth must be positive")
+
+    if uncertainty_relative_tolerance is None:
+        uncertainty_relative_tolerance = relative_tolerance
+
+    if uncertainty_relative_tolerance < 0.0:
+        raise ValueError("Uncertainty relative tolerance must be nonnegative")
 
     if not 0.0 <= minimum_semantic_agreement <= 1.0:
         raise ValueError("Semantic agreement threshold must be within [0, 1]")
@@ -152,7 +159,7 @@ def compare_output_sets(
             reference_uncertainty,
             candidate_uncertainty,
             absolute_tolerance=absolute_tolerance,
-            relative_tolerance=relative_tolerance,
+            relative_tolerance=uncertainty_relative_tolerance,
         ),
     }
 
