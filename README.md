@@ -22,6 +22,22 @@ complete pipeline can be deployed efficiently on NVIDIA hardware.
 
 ## Current status
 
+### v0.3.0 release candidate — ONNX deployment baseline
+
+- [x] Static batch-one FP32 ONNX export
+- [x] Stable three-output deployment contract
+- [x] Export from the validation-selected epoch-16 checkpoint
+- [x] ONNX graph validation
+- [x] ONNX Runtime CUDA inference
+- [x] Held-out Scene18 numerical parity validation
+- [x] Absolute, relative and semantic-agreement parity gates
+- [x] 62 passing tests
+
+The exported model passed PyTorch–ONNX Runtime CUDA parity on five
+deterministic held-out Scene18 samples. See
+[`docs/onnx_export.md`](docs/onnx_export.md) for the complete contract,
+results, tolerances and limitations.
+
 ### v0.2.0 — Multitask perception baseline
 
 - [x] Training-ready PyTorch dataset
@@ -189,6 +205,41 @@ Generate held-out qualitative predictions:
 
 Detailed methodology, checkpoint-selection rules and limitations are documented
 in [`docs/vkitti2_results.md`](docs/vkitti2_results.md).
+
+## ONNX export and parity validation
+
+Install the pinned export dependencies:
+
+~~~bash
+python -m pip install -e ".[dev,export]"
+~~~
+
+Export the official checkpoint:
+
+~~~bash
+python -m perception_rt.export_onnx
+~~~
+
+Run FP32 parity validation on five deterministic held-out Scene18 samples:
+
+~~~bash
+python -m perception_rt.validate_onnx
+~~~
+
+The validator compares PyTorch CUDA and ONNX Runtime CUDA using identical
+normalized inputs.
+
+| Validation item | Result |
+|---|---:|
+| Samples | 5 |
+| Minimum semantic argmax agreement | 0.99993164 |
+| Maximum semantic-logit absolute error | 0.0178061 |
+| Maximum log-depth absolute error | 0.0134659 |
+| Maximum post-processed depth absolute error | 0.100380 m |
+| Overall parity | Passed |
+
+The complete contract, measurements, thresholds and limitations are documented
+in [`docs/onnx_export.md`](docs/onnx_export.md).
 
 ## Development environment
 
