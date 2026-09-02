@@ -23,6 +23,11 @@ dev = [
     "pytest>=8.0,<10.0",
     "ruff>=0.12,<1.0",
 ]
+export = [
+    "onnx==1.22.0",
+    "onnxruntime-gpu==1.29.0",
+    "onnxscript==0.7.1",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
