@@ -132,10 +132,11 @@ class TensorRTRunner:
         engine_path: Path = DEFAULT_ENGINE_PATH,
         *,
         device: str | torch.device = "cuda",
+        logger: Any | None = None,
     ) -> None:
         self.device = resolve_cuda_device(device)
         self.trt = load_tensorrt()
-        self.logger = self.trt.Logger(self.trt.Logger.WARNING)
+        self.logger = logger if logger is not None else self.trt.Logger(self.trt.Logger.WARNING)
 
         with torch.cuda.device(self.device):
             self.runtime, self.engine = deserialize_engine(
