@@ -4,6 +4,7 @@ import pytest
 
 from perception_rt.benchmark_inference import (
     calculate_latency_statistics,
+    calculate_speedup,
     validate_benchmark_parameters,
 )
 
@@ -56,3 +57,23 @@ def test_validate_benchmark_parameters_rejects_invalid_counts(
             warmup,
             measured,
         )
+
+
+def test_calculate_speedup() -> None:
+    assert calculate_speedup(20.0, 10.0) == 2.0
+
+
+@pytest.mark.parametrize(
+    ("reference", "optimized"),
+    [
+        (0.0, 1.0),
+        (1.0, 0.0),
+        (float("inf"), 1.0),
+    ],
+)
+def test_calculate_speedup_rejects_invalid_values(
+    reference: float,
+    optimized: float,
+) -> None:
+    with pytest.raises(ValueError):
+        calculate_speedup(reference, optimized)

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import onnx
+import pytest
 import torch
 from torch import Tensor, nn
 
@@ -73,21 +74,30 @@ def test_exportable_model_returns_stable_output_order() -> None:
     assert torch.all(depth_log_scale == 3.0)
 
 
+@pytest.mark.parametrize(
+    ("precision", "expected_dtype"),
+    [
+        ("fp32", onnx.TensorProto.FLOAT),
+        ("fp16", onnx.TensorProto.FLOAT16),
+    ],
+)
 def test_export_writes_valid_static_contract(
     tmp_path: Path,
+    precision: str,
+    expected_dtype: int,
 ) -> None:
-    output_path = tmp_path / "model.onnx"
+    output_path = tmp_path / f"model_{precision}.onnx"
 
     result = export_model_to_onnx(
         SimpleMultitaskModel(),
         output_path,
         input_size=(32, 64),
+        precision=precision,
     )
 
     graph = onnx.load(str(result)).graph
     input_shape = tuple(
-        dimension.dim_value
-        for dimension in graph.input[0].type.tensor_type.shape.dim
+        dimension.dim_value for dimension in graph.input[0].type.tensor_type.shape.dim
     )
 
     assert result == output_path
@@ -98,3 +108,18 @@ def test_export_writes_valid_static_contract(
     assert [value.name for value in graph.output] == list(
         ONNX_OUTPUT_NAMES,
     )
+    assert graph.input[0].type.tensor_type.elem_type == expected_dtype
+    assert {value.type.tensor_type.elem_type for value in graph.output} == {expected_dtype}
+
+
+def test_export_rejects_unknown_precision(tmp_path: Path) -> None:
+    with pytest.raises(
+        ValueError,
+        match="Unsupported ONNX precision",
+    ):
+        export_model_to_onnx(
+            SimpleMultitaskModel(),
+            tmp_path / "invalid.onnx",
+            input_size=(32, 64),
+            precision="int4",
+        )

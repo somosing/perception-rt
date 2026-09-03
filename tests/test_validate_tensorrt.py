@@ -9,10 +9,15 @@ from perception_rt.validate_onnx import (
     DEFAULT_ABSOLUTE_TOLERANCE,
 )
 from perception_rt.validate_tensorrt import (
+    DEFAULT_FP16_MINIMUM_WITHIN_TOLERANCE_FRACTION,
     DEFAULT_UNCERTAINTY_RELATIVE_TOLERANCE,
     run_tensorrt_sample_parity,
     validate_sample_indices,
 )
+
+
+def test_fp16_requires_ninety_nine_percent_pixel_coverage() -> None:
+    assert DEFAULT_FP16_MINIMUM_WITHIN_TOLERANCE_FRACTION == 0.99
 
 
 def test_uncertainty_tolerance_is_log_equivalent() -> None:
@@ -46,11 +51,14 @@ def test_run_tensorrt_sample_parity_uses_same_input() -> None:
             }
 
     class MatchingRunner:
+        dtype = torch.float16
+
         def infer(
             self,
             image: torch.Tensor,
         ) -> dict[str, torch.Tensor]:
             assert image.is_contiguous()
+            assert image.dtype == self.dtype
             return {
                 "semantic_logits": image,
                 "log_depth": image[:, :1],

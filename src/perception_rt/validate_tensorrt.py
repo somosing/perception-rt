@@ -1,4 +1,4 @@
-"""Validate FP32 TensorRT parity against the PyTorch checkpoint."""
+"""Validate TensorRT parity against the FP32 PyTorch checkpoint."""
 
 import argparse
 import json
@@ -8,7 +8,11 @@ from typing import Any
 
 import torch
 
-from perception_rt.build_tensorrt import DEFAULT_ENGINE_PATH
+from perception_rt.build_tensorrt import (
+    DEFAULT_TENSORRT_PRECISION,
+    TENSORRT_PRECISIONS,
+    resolve_default_paths,
+)
 from perception_rt.data.torch_dataset import TrainingSample
 from perception_rt.evaluate import build_test_loader
 from perception_rt.export_onnx import (
@@ -23,6 +27,7 @@ from perception_rt.training.engine import seed_everything
 from perception_rt.validate_onnx import (
     DEFAULT_ABSOLUTE_TOLERANCE,
     DEFAULT_MINIMUM_SEMANTIC_AGREEMENT,
+    DEFAULT_MINIMUM_WITHIN_TOLERANCE_FRACTION,
     DEFAULT_RELATIVE_TOLERANCE,
     DEFAULT_SAMPLE_INDICES,
     compare_output_sets,
@@ -30,7 +35,9 @@ from perception_rt.validate_onnx import (
 )
 
 DEFAULT_UNCERTAINTY_RELATIVE_TOLERANCE = math.expm1(DEFAULT_ABSOLUTE_TOLERANCE)
+DEFAULT_FP16_MINIMUM_WITHIN_TOLERANCE_FRACTION = 0.99
 DEFAULT_TENSORRT_PARITY_REPORT_PATH = Path("outputs/tensorrt/parity.json")
+DEFAULT_FP16_TENSORRT_PARITY_REPORT_PATH = Path("outputs/tensorrt/parity_fp16.json")
 
 
 def validate_sample_indices(
@@ -59,13 +66,15 @@ def run_tensorrt_sample_parity(
     relative_tolerance: float,
     uncertainty_relative_tolerance: float,
     minimum_semantic_agreement: float,
+    minimum_within_tolerance_fraction: float = (DEFAULT_MINIMUM_WITHIN_TOLERANCE_FRACTION),
 ) -> dict[str, object]:
     """Compare PyTorch and TensorRT on one transformed sample."""
     image = sample["image"].unsqueeze(0).contiguous().to(device)
+    runner_image = image.to(dtype=runner.dtype).contiguous()
 
     with torch.inference_mode():
         torch_outputs = model(image)
-        tensorrt_outputs = runner.infer(image)
+        tensorrt_outputs = runner.infer(runner_image)
 
     reference_outputs = {
         name: torch_outputs[name].float().cpu().numpy() for name in ONNX_OUTPUT_NAMES
@@ -82,6 +91,7 @@ def run_tensorrt_sample_parity(
         relative_tolerance=relative_tolerance,
         uncertainty_relative_tolerance=(uncertainty_relative_tolerance),
         minimum_semantic_agreement=(minimum_semantic_agreement),
+        minimum_within_tolerance_fraction=(minimum_within_tolerance_fraction),
     )
 
     return {
@@ -112,7 +122,12 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--engine",
         type=Path,
-        default=DEFAULT_ENGINE_PATH,
+        default=None,
+    )
+    parser.add_argument(
+        "--precision",
+        choices=TENSORRT_PRECISIONS,
+        default=DEFAULT_TENSORRT_PRECISION,
     )
     parser.add_argument(
         "--indices",
@@ -136,6 +151,11 @@ def parse_arguments() -> argparse.Namespace:
         default=DEFAULT_UNCERTAINTY_RELATIVE_TOLERANCE,
     )
     parser.add_argument(
+        "--minimum-within-tolerance-fraction",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
         "--minimum-semantic-agreement",
         type=float,
         default=DEFAULT_MINIMUM_SEMANTIC_AGREEMENT,
@@ -143,7 +163,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=DEFAULT_TENSORRT_PARITY_REPORT_PATH,
+        default=None,
     )
     return parser.parse_args()
 
@@ -151,6 +171,22 @@ def parse_arguments() -> argparse.Namespace:
 def main() -> None:
     """Run held-out PyTorch–TensorRT parity validation."""
     arguments = parse_arguments()
+    _, default_engine_path = resolve_default_paths(arguments.precision)
+    engine_path = arguments.engine or default_engine_path
+    report_path = arguments.output or (
+        DEFAULT_FP16_TENSORRT_PARITY_REPORT_PATH
+        if arguments.precision == "fp16"
+        else DEFAULT_TENSORRT_PARITY_REPORT_PATH
+    )
+    minimum_tolerance_fraction = (
+        arguments.minimum_within_tolerance_fraction
+        if arguments.minimum_within_tolerance_fraction is not None
+        else (
+            DEFAULT_FP16_MINIMUM_WITHIN_TOLERANCE_FRACTION
+            if arguments.precision == "fp16"
+            else DEFAULT_MINIMUM_WITHIN_TOLERANCE_FRACTION
+        )
+    )
 
     for name, value in (
         ("Absolute", arguments.absolute_tolerance),
@@ -165,6 +201,9 @@ def main() -> None:
 
     if not 0.0 <= arguments.minimum_semantic_agreement <= 1.0:
         raise ValueError("Semantic agreement threshold must be within [0, 1]")
+
+    if not 0.0 <= minimum_tolerance_fraction <= 1.0:
+        raise ValueError("Minimum tolerance fraction must be within [0, 1]")
 
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for TensorRT parity validation")
@@ -184,11 +223,16 @@ def main() -> None:
     )
     model = model.to(device).eval()
     runner = TensorRTRunner(
-        arguments.engine,
+        engine_path,
         device=device,
     )
+    expected_runner_dtype = torch.float16 if arguments.precision == "fp16" else torch.float32
+    if runner.dtype != expected_runner_dtype:
+        raise ValueError(
+            f"Requested {arguments.precision.upper()} validation, but engine uses {runner.dtype}"
+        )
 
-    print(f"Comparing checkpoint epoch {metadata['epoch']} with {arguments.engine}")
+    print(f"Comparing checkpoint epoch {metadata['epoch']} with {engine_path}")
     print(f"TensorRT {runner.trt.__version__}, GPU: {torch.cuda.get_device_name(device)}")
 
     results: list[dict[str, Any]] = []
@@ -205,6 +249,7 @@ def main() -> None:
             relative_tolerance=arguments.relative_tolerance,
             uncertainty_relative_tolerance=(arguments.uncertainty_relative_tolerance),
             minimum_semantic_agreement=(arguments.minimum_semantic_agreement),
+            minimum_within_tolerance_fraction=(minimum_tolerance_fraction),
         )
         result["index"] = index
         results.append(result)
@@ -229,9 +274,9 @@ def main() -> None:
             **metadata,
         },
         "engine": {
-            "path": str(arguments.engine),
-            "precision": "FP32",
-            "size_mib": (arguments.engine.stat().st_size / 1024**2),
+            "path": str(engine_path),
+            "precision": arguments.precision.upper(),
+            "size_mib": (engine_path.stat().st_size / 1024**2),
             "tensorrt_version": runner.trt.__version__,
             "gpu": torch.cuda.get_device_name(device),
             "compute_capability": list(torch.cuda.get_device_capability(device)),
@@ -241,16 +286,17 @@ def main() -> None:
             "relative": arguments.relative_tolerance,
             "uncertainty_relative": (arguments.uncertainty_relative_tolerance),
             "minimum_semantic_agreement": (arguments.minimum_semantic_agreement),
+            "minimum_within_tolerance_fraction": (minimum_tolerance_fraction),
         },
         "summary": summary,
         "samples": results,
     }
 
-    arguments.output.parent.mkdir(
+    report_path.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
-    arguments.output.write_text(
+    report_path.write_text(
         json.dumps(
             report,
             indent=2,
@@ -261,7 +307,7 @@ def main() -> None:
         encoding="utf-8",
     )
 
-    print(f"Saved parity report: {arguments.output}")
+    print(f"Saved parity report: {report_path}")
     print(json.dumps(summary, indent=2, sort_keys=True))
 
     if not summary["passed"]:

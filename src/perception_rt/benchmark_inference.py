@@ -1,4 +1,4 @@
-"""Benchmark PyTorch, ONNX Runtime CUDA and TensorRT inference."""
+"""Benchmark FP32 backends and optimized TensorRT FP16 inference."""
 
 import argparse
 import json
@@ -12,6 +12,7 @@ import torch
 
 from perception_rt.build_tensorrt import (
     DEFAULT_ENGINE_PATH,
+    DEFAULT_FP16_ENGINE_PATH,
     EXPECTED_OUTPUT_SHAPES,
 )
 from perception_rt.evaluate import build_test_loader
@@ -31,7 +32,7 @@ from perception_rt.validate_onnx import create_onnx_session
 DEFAULT_WARMUP_ITERATIONS = 30
 DEFAULT_MEASURED_ITERATIONS = 100
 DEFAULT_BENCHMARK_SAMPLE_INDEX = 0
-DEFAULT_BENCHMARK_REPORT_PATH = Path("outputs/tensorrt/benchmark.json")
+DEFAULT_BENCHMARK_REPORT_PATH = Path("outputs/tensorrt/benchmark_fp16.json")
 
 
 def validate_benchmark_parameters(
@@ -73,6 +74,21 @@ def calculate_latency_statistics(
         "p99_ms": float(np.percentile(values, 99)),
         "throughput_fps": 1000.0 / mean_ms,
     }
+
+
+def calculate_speedup(
+    reference_mean_ms: float,
+    optimized_mean_ms: float,
+) -> float:
+    """Return latency speedup from positive mean measurements."""
+    values = np.asarray(
+        [reference_mean_ms, optimized_mean_ms],
+        dtype=np.float64,
+    )
+    if not np.isfinite(values).all() or np.any(values <= 0.0):
+        raise ValueError("Mean latency measurements must be finite and positive")
+
+    return reference_mean_ms / optimized_mean_ms
 
 
 def benchmark_backend(
@@ -146,7 +162,7 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Benchmark device-resident synchronous FP32 inference "
-            "with PyTorch, ONNX Runtime CUDA and TensorRT."
+            "and optimized TensorRT FP16 inference."
         )
     )
     parser.add_argument(
@@ -168,6 +184,11 @@ def parse_arguments() -> argparse.Namespace:
         "--engine",
         type=Path,
         default=DEFAULT_ENGINE_PATH,
+    )
+    parser.add_argument(
+        "--fp16-engine",
+        type=Path,
+        default=DEFAULT_FP16_ENGINE_PATH,
     )
     parser.add_argument(
         "--sample-index",
@@ -193,7 +214,7 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Run the three-backend FP32 benchmark."""
+    """Run the four-backend FP32 and FP16 benchmark."""
     arguments = parse_arguments()
     validate_benchmark_parameters(
         arguments.warmup_iterations,
@@ -219,6 +240,7 @@ def main() -> None:
     torch.backends.cudnn.benchmark = True
 
     image = sample["image"].unsqueeze(0).contiguous().to(device)
+    image_fp16 = image.to(dtype=torch.float16).contiguous()
     torch.cuda.synchronize(device)
 
     model, metadata = build_checkpoint_model(
@@ -233,10 +255,19 @@ def main() -> None:
         image,
         device,
     )
-    runner = TensorRTRunner(
+    fp32_runner = TensorRTRunner(
         arguments.engine,
         device=device,
     )
+    fp16_runner = TensorRTRunner(
+        arguments.fp16_engine,
+        device=device,
+        logger=fp32_runner.logger,
+    )
+    if fp32_runner.dtype != torch.float32:
+        raise ValueError("FP32 engine path does not contain an FP32 engine")
+    if fp16_runner.dtype != torch.float16:
+        raise ValueError("FP16 engine path does not contain an FP16 engine")
 
     def run_pytorch() -> None:
         with torch.inference_mode():
@@ -245,8 +276,11 @@ def main() -> None:
     def run_onnx_runtime() -> None:
         session.run_with_iobinding(io_binding)
 
-    def run_tensorrt() -> None:
-        runner.infer(image)
+    def run_tensorrt_fp32() -> None:
+        fp32_runner.infer(image)
+
+    def run_tensorrt_fp16() -> None:
+        fp16_runner.infer(image_fp16)
 
     def synchronize() -> None:
         torch.cuda.synchronize(device)
@@ -257,7 +291,8 @@ def main() -> None:
             "onnx_runtime_cuda_fp32",
             run_onnx_runtime,
         ),
-        ("tensorrt_fp32", run_tensorrt),
+        ("tensorrt_fp32", run_tensorrt_fp32),
+        ("tensorrt_fp16", run_tensorrt_fp16),
     )
 
     results = {
@@ -270,12 +305,29 @@ def main() -> None:
         for name, function in backend_functions
     }
 
-    tensorrt_results = results["tensorrt_fp32"]
-    tensorrt_results["speedup_vs_pytorch"] = (
-        results["pytorch_fp32"]["mean_ms"] / tensorrt_results["mean_ms"]
+    tensorrt_fp32 = results["tensorrt_fp32"]
+    tensorrt_fp16 = results["tensorrt_fp16"]
+
+    tensorrt_fp32["speedup_vs_pytorch_fp32"] = calculate_speedup(
+        results["pytorch_fp32"]["mean_ms"],
+        tensorrt_fp32["mean_ms"],
     )
-    tensorrt_results["speedup_vs_onnx_runtime"] = (
-        results["onnx_runtime_cuda_fp32"]["mean_ms"] / tensorrt_results["mean_ms"]
+    tensorrt_fp32["speedup_vs_onnx_runtime_cuda_fp32"] = calculate_speedup(
+        results["onnx_runtime_cuda_fp32"]["mean_ms"],
+        tensorrt_fp32["mean_ms"],
+    )
+
+    tensorrt_fp16["speedup_vs_pytorch_fp32"] = calculate_speedup(
+        results["pytorch_fp32"]["mean_ms"],
+        tensorrt_fp16["mean_ms"],
+    )
+    tensorrt_fp16["speedup_vs_onnx_runtime_cuda_fp32"] = calculate_speedup(
+        results["onnx_runtime_cuda_fp32"]["mean_ms"],
+        tensorrt_fp16["mean_ms"],
+    )
+    tensorrt_fp16["speedup_vs_tensorrt_fp32"] = calculate_speedup(
+        tensorrt_fp32["mean_ms"],
+        tensorrt_fp16["mean_ms"],
     )
 
     report = {
@@ -286,7 +338,7 @@ def main() -> None:
             "frame": int(sample["frame"]),
         },
         "input_shape": list(image.shape),
-        "precision": "FP32",
+        "precisions": ["FP32", "FP16"],
         "checkpoint_epoch": metadata["epoch"],
         "warmup_iterations": (arguments.warmup_iterations),
         "measured_iterations": (arguments.measured_iterations),
@@ -297,6 +349,7 @@ def main() -> None:
             "device_resident_io": True,
             "model_loading_excluded": True,
             "preprocessing_excluded": True,
+            "fp16_input_conversion_excluded": True,
             "backend_order": [name for name, _ in backend_functions],
         },
         "hardware": {
@@ -306,7 +359,7 @@ def main() -> None:
         "software": {
             "pytorch": torch.__version__,
             "onnx_runtime": ort.__version__,
-            "tensorrt": runner.trt.__version__,
+            "tensorrt": fp16_runner.trt.__version__,
         },
         "results": results,
     }
@@ -335,11 +388,13 @@ def main() -> None:
         )
 
     print(
-        "TensorRT speedup: "
-        f"{tensorrt_results['speedup_vs_pytorch']:.3f}x "
-        "vs PyTorch, "
-        f"{tensorrt_results['speedup_vs_onnx_runtime']:.3f}x "
-        "vs ONNX Runtime CUDA"
+        "TensorRT FP16 speedup: "
+        f"{tensorrt_fp16['speedup_vs_tensorrt_fp32']:.3f}x "
+        "vs TensorRT FP32, "
+        f"{tensorrt_fp16['speedup_vs_pytorch_fp32']:.3f}x "
+        "vs PyTorch FP32, "
+        f"{tensorrt_fp16['speedup_vs_onnx_runtime_cuda_fp32']:.3f}x "
+        "vs ONNX Runtime CUDA FP32"
     )
     print(f"Saved benchmark report: {arguments.output}")
 

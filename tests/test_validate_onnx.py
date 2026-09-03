@@ -149,6 +149,7 @@ def test_summarize_parity_results_reports_worst_case() -> None:
             "mean_absolute_error": maximum_error / 2.0,
             "within_tolerance_fraction": 1.0 if passed else 0.99,
             "all_within_tolerance": passed,
+            "meets_minimum_fraction": passed,
         }
 
         return {
@@ -244,3 +245,31 @@ def test_uncertainty_scale_supports_log_equivalent_tolerance() -> None:
 
     assert strict["passed"] is False
     assert log_equivalent["passed"] is True
+
+
+def test_compare_output_sets_supports_minimum_pixel_fraction() -> None:
+    reference = {
+        "semantic_logits": np.zeros((1, 2, 1, 4), dtype=np.float32),
+        "log_depth": np.zeros((1, 1, 1, 4), dtype=np.float32),
+        "depth_log_scale": np.zeros((1, 1, 1, 4), dtype=np.float32),
+    }
+    candidate = {name: value.copy() for name, value in reference.items()}
+    candidate["log_depth"][0, 0, 0, 0] = 0.1
+
+    strict = compare_output_sets(
+        reference,
+        candidate,
+        maximum_depth_m=200.0,
+    )
+    coverage_gated = compare_output_sets(
+        reference,
+        candidate,
+        maximum_depth_m=200.0,
+        minimum_within_tolerance_fraction=0.75,
+    )
+
+    assert strict["passed"] is False
+    assert coverage_gated["passed"] is True
+    metric = coverage_gated["raw_outputs"]["log_depth"]
+    assert metric["all_within_tolerance"] is False
+    assert metric["meets_minimum_fraction"] is True
