@@ -22,7 +22,7 @@ complete pipeline can be deployed efficiently on NVIDIA hardware.
 
 ## Current status
 
-### v0.5.0 release candidate — TensorRT FP16 optimization
+### v0.5.0 — TensorRT FP16 optimization
 
 - [x] Native FP16 ONNX export from the epoch-16 checkpoint
 - [x] Strongly typed static FP16 TensorRT engine
