@@ -25,6 +25,7 @@ from perception_rt.training.engine import seed_everything
 DEFAULT_ABSOLUTE_TOLERANCE = 2e-2
 DEFAULT_RELATIVE_TOLERANCE = 1e-2
 DEFAULT_MINIMUM_SEMANTIC_AGREEMENT = 0.999
+DEFAULT_MINIMUM_WITHIN_TOLERANCE_FRACTION = 1.0
 DEFAULT_SAMPLE_INDICES = (0, 847, 1695, 2542, 3389)
 DEFAULT_PARITY_REPORT_PATH = Path("outputs/onnx/parity.json")
 
@@ -91,6 +92,7 @@ def compare_output_sets(
     relative_tolerance: float = DEFAULT_RELATIVE_TOLERANCE,
     uncertainty_relative_tolerance: float | None = None,
     minimum_semantic_agreement: float = DEFAULT_MINIMUM_SEMANTIC_AGREEMENT,
+    minimum_within_tolerance_fraction: float = (DEFAULT_MINIMUM_WITHIN_TOLERANCE_FRACTION),
 ) -> dict[str, object]:
     """Compare every raw and post-processed deployment output."""
     output_names = (
@@ -117,6 +119,9 @@ def compare_output_sets(
 
     if not 0.0 <= minimum_semantic_agreement <= 1.0:
         raise ValueError("Semantic agreement threshold must be within [0, 1]")
+
+    if not 0.0 <= minimum_within_tolerance_fraction <= 1.0:
+        raise ValueError("Minimum tolerance fraction must be within [0, 1]")
 
     raw_parity = {
         name: compare_arrays(
@@ -172,7 +177,14 @@ def compare_output_sets(
         reference_outputs["semantic_logits"],
         candidate_outputs["semantic_logits"],
     )
-    outputs_within_tolerance = all(result["all_within_tolerance"] for result in parity_results)
+    for result in parity_results:
+        result["meets_minimum_fraction"] = (
+            float(result["within_tolerance_fraction"]) >= minimum_within_tolerance_fraction
+        )
+
+    outputs_within_tolerance = all(
+        bool(result["meets_minimum_fraction"]) for result in parity_results
+    )
 
     return {
         "raw_outputs": raw_parity,
@@ -279,6 +291,9 @@ def _summarize_metric_group(
                 float(metric["within_tolerance_fraction"]) for metric in metrics
             ),
             "all_within_tolerance": all(bool(metric["all_within_tolerance"]) for metric in metrics),
+            "meets_minimum_fraction": all(
+                bool(metric["meets_minimum_fraction"]) for metric in metrics
+            ),
         }
 
     return summary
