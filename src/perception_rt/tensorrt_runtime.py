@@ -18,8 +18,11 @@ from perception_rt.export_onnx import (
 )
 
 
-def validate_engine_contract(engine: Any, trt: Any) -> None:
-    """Validate TensorRT engine names, modes, shapes and dtypes."""
+def validate_engine_contract(
+    engine: Any,
+    trt: Any,
+) -> torch.dtype:
+    """Validate the engine contract and return its PyTorch dtype."""
     expected_names = (ONNX_INPUT_NAME, *ONNX_OUTPUT_NAMES)
 
     if engine.num_io_tensors != len(expected_names):
@@ -43,14 +46,29 @@ def validate_engine_contract(engine: Any, trt: Any) -> None:
         if shape != expected_shape:
             raise ValueError(f"Expected {name!r} shape {expected_shape}, found {shape}")
 
-        if engine.get_tensor_dtype(name) != trt.float32:
-            raise ValueError(f"Expected {name!r} to use FP32")
-
         expected_mode = (
             trt.TensorIOMode.INPUT if name == ONNX_INPUT_NAME else trt.TensorIOMode.OUTPUT
         )
         if engine.get_tensor_mode(name) != expected_mode:
             raise ValueError(f"Tensor {name!r} has an invalid I/O mode")
+
+    engine_dtypes = {name: engine.get_tensor_dtype(name) for name in expected_names}
+    unique_dtypes = set(engine_dtypes.values())
+
+    if len(unique_dtypes) != 1:
+        details = ", ".join(f"{name}={dtype}" for name, dtype in engine_dtypes.items())
+        raise ValueError(f"Expected all engine tensors to use one dtype; found {details}")
+
+    engine_dtype = next(iter(unique_dtypes))
+    dtype_mapping = {
+        trt.float32: torch.float32,
+        trt.float16: torch.float16,
+    }
+
+    try:
+        return dtype_mapping[engine_dtype]
+    except KeyError as error:
+        raise ValueError(f"Unsupported TensorRT engine dtype: {engine_dtype}") from error
 
 
 def deserialize_engine(
@@ -92,12 +110,14 @@ def resolve_cuda_device(
 def validate_input_tensor(
     image: Tensor,
     device: torch.device,
+    *,
+    expected_dtype: torch.dtype = torch.float32,
 ) -> None:
     """Validate the static TensorRT input contract."""
     if tuple(image.shape) != EXPECTED_INPUT_SHAPE:
         raise ValueError(f"Expected image shape {EXPECTED_INPUT_SHAPE}, found {tuple(image.shape)}")
-    if image.dtype != torch.float32:
-        raise ValueError("TensorRT input must use torch.float32")
+    if image.dtype != expected_dtype:
+        raise ValueError(f"TensorRT input must use {expected_dtype}")
     if image.device != device:
         raise ValueError(f"Expected input on {device}, found {image.device}")
     if not image.is_contiguous():
@@ -105,7 +125,7 @@ def validate_input_tensor(
 
 
 class TensorRTRunner:
-    """Execute the static FP32 engine with reusable CUDA outputs."""
+    """Execute a static FP32 or FP16 engine with reusable CUDA outputs."""
 
     def __init__(
         self,
@@ -123,7 +143,10 @@ class TensorRTRunner:
                 self.trt,
                 self.logger,
             )
-            validate_engine_contract(self.engine, self.trt)
+            self.dtype = validate_engine_contract(
+                self.engine,
+                self.trt,
+            )
 
             self.context = self.engine.create_execution_context()
             if self.context is None:
@@ -133,7 +156,7 @@ class TensorRTRunner:
             self._outputs = {
                 name: torch.empty(
                     EXPECTED_OUTPUT_SHAPES[name],
-                    dtype=torch.float32,
+                    dtype=self.dtype,
                     device=self.device,
                 )
                 for name in ONNX_OUTPUT_NAMES
@@ -148,7 +171,11 @@ class TensorRTRunner:
 
     def infer(self, image: Tensor) -> dict[str, Tensor]:
         """Run synchronous inference; outputs are reused next call."""
-        validate_input_tensor(image, self.device)
+        validate_input_tensor(
+            image,
+            self.device,
+            expected_dtype=self.dtype,
+        )
 
         with torch.cuda.device(self.device):
             caller_stream = torch.cuda.current_stream(self.device)

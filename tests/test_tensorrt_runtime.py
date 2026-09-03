@@ -29,16 +29,20 @@ class FakeTensorIOMode:
 class FakeTensorRT:
     TensorIOMode = FakeTensorIOMode
     float32 = "float32"
+    float16 = "float16"
 
 
 class FakeEngine:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        dtype: str = FakeTensorRT.float32,
+    ) -> None:
         self.names = (ONNX_INPUT_NAME, *ONNX_OUTPUT_NAMES)
         self.shapes = {
             ONNX_INPUT_NAME: EXPECTED_INPUT_SHAPE,
             **EXPECTED_OUTPUT_SHAPES,
         }
-        self.dtypes = {name: FakeTensorRT.float32 for name in self.names}
+        self.dtypes = {name: dtype for name in self.names}
         self.modes = {
             name: (FakeTensorIOMode.INPUT if name == ONNX_INPUT_NAME else FakeTensorIOMode.OUTPUT)
             for name in self.names
@@ -65,10 +69,21 @@ class FakeEngine:
 
 
 def test_validate_engine_contract_accepts_expected_engine() -> None:
-    validate_engine_contract(
+    dtype = validate_engine_contract(
         FakeEngine(),
         FakeTensorRT,
     )
+
+    assert dtype == torch.float32
+
+
+def test_validate_engine_contract_accepts_fp16_engine() -> None:
+    dtype = validate_engine_contract(
+        FakeEngine(FakeTensorRT.float16),
+        FakeTensorRT,
+    )
+
+    assert dtype == torch.float16
 
 
 def test_validate_engine_contract_rejects_wrong_names() -> None:
@@ -91,7 +106,14 @@ def test_validate_engine_contract_rejects_wrong_dtype() -> None:
     engine = FakeEngine()
     engine.dtypes["semantic_logits"] = "float16"
 
-    with pytest.raises(ValueError, match="semantic_logits.*FP32"):
+    with pytest.raises(ValueError, match="use one dtype"):
+        validate_engine_contract(engine, FakeTensorRT)
+
+
+def test_validate_engine_contract_rejects_unsupported_dtype() -> None:
+    engine = FakeEngine("int8")
+
+    with pytest.raises(ValueError, match="Unsupported"):
         validate_engine_contract(engine, FakeTensorRT)
 
 
@@ -101,6 +123,19 @@ def test_validate_engine_contract_rejects_wrong_mode() -> None:
 
     with pytest.raises(ValueError, match="invalid I/O mode"):
         validate_engine_contract(engine, FakeTensorRT)
+
+
+def test_validate_input_tensor_accepts_expected_fp16() -> None:
+    image = torch.zeros(
+        EXPECTED_INPUT_SHAPE,
+        dtype=torch.float16,
+    )
+
+    validate_input_tensor(
+        image,
+        image.device,
+        expected_dtype=torch.float16,
+    )
 
 
 def test_validate_input_tensor_rejects_wrong_shape() -> None:
