@@ -217,7 +217,9 @@ Run the benchmark:
 python -m perception_rt.benchmark_inference
 ~~~
 
-This writes `outputs/tensorrt/benchmark.json`.
+In v0.4.0 this wrote `outputs/tensorrt/benchmark.json`. The current
+four-backend benchmark writes `outputs/tensorrt/benchmark_fp16.json`; see
+[`tensorrt_fp16.md`](tensorrt_fp16.md).
 
 Models, engines, checkpoints and generated reports remain under `outputs/`
 and are intentionally excluded from Git.
@@ -236,5 +238,5 @@ and are intentionally excluded from Git.
 - PyTorch allocates model outputs while ONNX Runtime and TensorRT reuse
   bound output buffers.
 - The engine supports only static batch-one FP32 inference.
-- FP16 and INT8 optimization remain future stages.
+- FP16 optimization is documented in [`tensorrt_fp16.md`](tensorrt_fp16.md); INT8 remains future work.
 - Native C++/CUDA and ROS 2 deployment remain future stages.

@@ -22,6 +22,24 @@ complete pipeline can be deployed efficiently on NVIDIA hardware.
 
 ## Current status
 
+### v0.5.0 release candidate — TensorRT FP16 optimization
+
+- [x] Native FP16 ONNX export from the epoch-16 checkpoint
+- [x] Strongly typed static FP16 TensorRT engine
+- [x] Precision-aware native CUDA runtime
+- [x] Strict numerical tolerances with an explicit 99% pixel-coverage gate
+- [x] Held-out Scene18 FP32 PyTorch–FP16 TensorRT parity
+- [x] Reproducible four-backend FP32/FP16 benchmark
+- [x] 107 passing tests
+
+The FP16 engine passed parity on five deterministic held-out Scene18
+samples with `0.99965332` minimum semantic agreement and at least `99.2310%`
+numerical-tolerance coverage for every output. On the validated RTX 3060
+Laptop GPU it achieved `6.846 ms` mean latency and `146.06 FPS`: `2.462×`
+faster than TensorRT FP32. See
+[`docs/tensorrt_fp16.md`](docs/tensorrt_fp16.md) for the complete protocol,
+results and limitations.
+
 ### v0.4.0 — TensorRT FP32 deployment baseline
 
 - [x] Strongly typed static FP32 TensorRT engine builder
@@ -301,6 +319,48 @@ CUDA. Model loading, preprocessing and host-device transfer were excluded.
 Detailed engine construction, parity criteria, benchmark methodology and
 hardware limitations are documented in
 [`docs/tensorrt_inference.md`](docs/tensorrt_inference.md).
+
+## TensorRT FP16 optimization
+
+Export the checkpoint as an explicit FP16 ONNX graph:
+
+~~~bash
+python -m perception_rt.export_onnx --precision fp16
+~~~
+
+Build the strongly typed FP16 TensorRT engine:
+
+~~~bash
+python -m perception_rt.build_tensorrt --precision fp16
+~~~
+
+Validate the FP16 engine against the FP32 PyTorch checkpoint:
+
+~~~bash
+python -m perception_rt.validate_tensorrt --precision fp16
+~~~
+
+Benchmark PyTorch FP32, ONNX Runtime CUDA FP32, TensorRT FP32 and
+TensorRT FP16:
+
+~~~bash
+python -m perception_rt.benchmark_inference
+~~~
+
+| Backend | Mean latency | P95 latency | Throughput |
+|---|---:|---:|---:|
+| PyTorch FP32 | 23.659 ms | 24.230 ms | 42.27 FPS |
+| ONNX Runtime CUDA FP32 | 26.879 ms | 27.293 ms | 37.20 FPS |
+| TensorRT FP32 | 16.859 ms | 17.305 ms | 59.32 FPS |
+| TensorRT FP16 | 6.846 ms | 6.918 ms | 146.06 FPS |
+
+TensorRT FP16 was `2.462×` faster than TensorRT FP32, `3.456×` faster
+than PyTorch FP32 and `3.926×` faster than ONNX Runtime CUDA FP32.
+The FP16 ONNX model is `52.71 MiB`; the generated engine is `85.00 MiB`.
+
+Detailed precision design, parity criteria, benchmark methodology and
+limitations are documented in
+[`docs/tensorrt_fp16.md`](docs/tensorrt_fp16.md).
 
 ## Development environment
 
