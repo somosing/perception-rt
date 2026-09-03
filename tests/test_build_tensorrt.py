@@ -5,10 +5,15 @@ from pathlib import Path
 import pytest
 
 from perception_rt.build_tensorrt import (
+    DEFAULT_ENGINE_PATH,
+    DEFAULT_FP16_ENGINE_PATH,
+    DEFAULT_FP16_ONNX_PATH,
+    DEFAULT_ONNX_PATH,
     EXPECTED_INPUT_SHAPE,
     EXPECTED_OUTPUT_SHAPES,
     collect_parser_errors,
     parse_onnx_network,
+    resolve_default_paths,
     validate_network_contract,
 )
 from perception_rt.export_onnx import (
@@ -34,8 +39,10 @@ class FakeNetwork:
         self,
         *,
         output_names: tuple[str, ...] = ONNX_OUTPUT_NAMES,
+        dtype: object | None = None,
     ) -> None:
-        dtype = object()
+        if dtype is None:
+            dtype = object()
         self.inputs = [
             FakeTensor(
                 ONNX_INPUT_NAME,
@@ -145,4 +152,45 @@ def test_parse_onnx_network_rejects_missing_file(
         parse_onnx_network(
             parser,
             tmp_path / "missing.onnx",
+        )
+
+
+@pytest.mark.parametrize(
+    ("precision", "expected_paths"),
+    [
+        ("fp32", (DEFAULT_ONNX_PATH, DEFAULT_ENGINE_PATH)),
+        (
+            "fp16",
+            (DEFAULT_FP16_ONNX_PATH, DEFAULT_FP16_ENGINE_PATH),
+        ),
+    ],
+)
+def test_resolve_default_paths(
+    precision: str,
+    expected_paths: tuple[Path, Path],
+) -> None:
+    assert resolve_default_paths(precision) == expected_paths
+
+
+def test_resolve_default_paths_rejects_unknown_precision() -> None:
+    with pytest.raises(
+        ValueError,
+        match="Unsupported TensorRT precision",
+    ):
+        resolve_default_paths("int4")
+
+
+def test_validate_network_contract_enforces_dtype() -> None:
+    expected_dtype = object()
+    network = FakeNetwork(dtype=expected_dtype)
+
+    validate_network_contract(
+        network,
+        expected_dtype=expected_dtype,
+    )
+
+    with pytest.raises(ValueError, match="Expected all tensors"):
+        validate_network_contract(
+            network,
+            expected_dtype=object(),
         )

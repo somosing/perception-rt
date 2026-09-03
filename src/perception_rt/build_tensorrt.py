@@ -5,10 +5,19 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
-from perception_rt.export_onnx import ONNX_INPUT_NAME, ONNX_OUTPUT_NAMES
+from perception_rt.export_onnx import (
+    DEFAULT_FP16_OUTPUT_PATH,
+    DEFAULT_OUTPUT_PATH,
+    ONNX_INPUT_NAME,
+    ONNX_OUTPUT_NAMES,
+)
 
-DEFAULT_ONNX_PATH = Path("outputs/onnx/perception_rt_mit_b2_fp32.onnx")
+DEFAULT_ONNX_PATH = DEFAULT_OUTPUT_PATH
+DEFAULT_FP16_ONNX_PATH = DEFAULT_FP16_OUTPUT_PATH
 DEFAULT_ENGINE_PATH = Path("outputs/tensorrt/perception_rt_mit_b2_fp32.engine")
+DEFAULT_FP16_ENGINE_PATH = Path("outputs/tensorrt/perception_rt_mit_b2_fp16.engine")
+DEFAULT_TENSORRT_PRECISION = "fp32"
+TENSORRT_PRECISIONS = ("fp32", "fp16")
 DEFAULT_WORKSPACE_MIB = 1024
 EXPECTED_INPUT_SHAPE = (1, 3, 320, 640)
 EXPECTED_OUTPUT_SHAPES = {
@@ -16,6 +25,20 @@ EXPECTED_OUTPUT_SHAPES = {
     "log_depth": (1, 1, 320, 640),
     "depth_log_scale": (1, 1, 320, 640),
 }
+
+
+def resolve_default_paths(
+    precision: str,
+) -> tuple[Path, Path]:
+    """Resolve default ONNX and engine paths for a precision."""
+    if precision == "fp32":
+        return DEFAULT_ONNX_PATH, DEFAULT_ENGINE_PATH
+    if precision == "fp16":
+        return DEFAULT_FP16_ONNX_PATH, DEFAULT_FP16_ENGINE_PATH
+
+    raise ValueError(
+        f"Unsupported TensorRT precision {precision!r}; choose from {TENSORRT_PRECISIONS}"
+    )
 
 
 def load_tensorrt() -> Any:
@@ -84,7 +107,9 @@ def validate_network_contract(
             f"{tensor.name}={tensor.dtype}" for tensor in tensors if tensor.dtype != expected_dtype
         ]
         if invalid:
-            raise ValueError("Expected all tensors to be FP32; found " + ", ".join(invalid))
+            raise ValueError(
+                f"Expected all tensors to use {expected_dtype}; found " + ", ".join(invalid)
+            )
 
 
 def build_tensorrt_engine(
@@ -93,8 +118,11 @@ def build_tensorrt_engine(
     *,
     workspace_mib: int = DEFAULT_WORKSPACE_MIB,
     overwrite: bool = False,
+    precision: str = DEFAULT_TENSORRT_PRECISION,
 ) -> Path:
-    """Build and save a strongly typed static FP32 engine."""
+    """Build and save a strongly typed static TensorRT engine."""
+    resolve_default_paths(precision)
+
     if workspace_mib <= 0:
         raise ValueError("Workspace size must be positive")
 
@@ -112,9 +140,10 @@ def build_tensorrt_engine(
     parser = trt.OnnxParser(network, logger)
 
     parse_onnx_network(parser, onnx_path)
+    expected_dtype = trt.float16 if precision == "fp16" else trt.float32
     validate_network_contract(
         network,
-        expected_dtype=trt.float32,
+        expected_dtype=expected_dtype,
     )
 
     config = builder.create_builder_config()
@@ -137,16 +166,21 @@ def build_tensorrt_engine(
 
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="Build a static FP32 TensorRT engine.")
+    parser = argparse.ArgumentParser(description="Build a static TensorRT engine.")
     parser.add_argument(
         "--onnx",
         type=Path,
-        default=DEFAULT_ONNX_PATH,
+        default=None,
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=DEFAULT_ENGINE_PATH,
+        default=None,
+    )
+    parser.add_argument(
+        "--precision",
+        choices=TENSORRT_PRECISIONS,
+        default=DEFAULT_TENSORRT_PRECISION,
     )
     parser.add_argument(
         "--workspace-mib",
@@ -163,19 +197,23 @@ def parse_arguments() -> argparse.Namespace:
 def main() -> None:
     """Build the configured TensorRT engine."""
     arguments = parse_arguments()
+    default_onnx_path, default_engine_path = resolve_default_paths(arguments.precision)
+    onnx_path = arguments.onnx or default_onnx_path
+    requested_engine_path = arguments.output or default_engine_path
     started = perf_counter()
 
     engine_path = build_tensorrt_engine(
-        arguments.onnx,
-        arguments.output,
+        onnx_path,
+        requested_engine_path,
         workspace_mib=arguments.workspace_mib,
         overwrite=arguments.force,
+        precision=arguments.precision,
     )
 
     duration = perf_counter() - started
     size_mib = engine_path.stat().st_size / 1024**2
 
-    print(f"Built FP32 TensorRT engine: {engine_path}")
+    print(f"Built {arguments.precision.upper()} TensorRT engine: {engine_path}")
     print(f"Size: {size_mib:.2f} MiB")
     print(f"Build time: {duration:.2f} seconds")
 
