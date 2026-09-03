@@ -21,9 +21,16 @@ ONNX_OUTPUT_NAMES = (
     "depth_log_scale",
 )
 DEFAULT_ONNX_OPSET = 18
+DEFAULT_ONNX_PRECISION = "fp32"
+ONNX_PRECISIONS = ("fp32", "fp16")
 DEFAULT_CONFIG_PATH = Path("configs/train_vkitti2.yaml")
 DEFAULT_CHECKPOINT_PATH = Path("outputs/training/vkitti2_multitask/best.pt")
 DEFAULT_OUTPUT_PATH = Path("outputs/onnx/perception_rt_mit_b2_fp32.onnx")
+DEFAULT_FP16_OUTPUT_PATH = Path("outputs/onnx/perception_rt_mit_b2_fp16.onnx")
+ONNX_TORCH_DTYPES = {
+    "fp32": torch.float32,
+    "fp16": torch.float16,
+}
 
 
 class ExportablePerceptionRTModel(nn.Module):
@@ -53,8 +60,9 @@ def export_model_to_onnx(
     *,
     input_size: tuple[int, int],
     opset_version: int = DEFAULT_ONNX_OPSET,
+    precision: str = DEFAULT_ONNX_PRECISION,
 ) -> Path:
-    """Export and validate a static batch-one FP32 ONNX graph."""
+    """Export and validate a static batch-one ONNX graph."""
     height, width = input_size
 
     if height <= 0 or width <= 0:
@@ -63,20 +71,27 @@ def export_model_to_onnx(
     if opset_version <= 0:
         raise ValueError("ONNX opset version must be positive")
 
+    try:
+        dtype = ONNX_TORCH_DTYPES[precision]
+    except KeyError as error:
+        raise ValueError(
+            f"Unsupported ONNX precision {precision!r}; choose from {ONNX_PRECISIONS}"
+        ) from error
+
     output_path.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
 
     exportable_model = ExportablePerceptionRTModel(
-        model.cpu().eval(),
+        model.cpu().to(dtype=dtype).eval(),
     ).eval()
     example_image = torch.zeros(
         1,
         3,
         height,
         width,
-        dtype=torch.float32,
+        dtype=dtype,
     )
 
     torch.onnx.export(
@@ -117,9 +132,7 @@ def build_checkpoint_model(
 def parse_arguments() -> argparse.Namespace:
     """Parse ONNX export command-line arguments."""
     parser = argparse.ArgumentParser(
-        description=(
-            "Export a trained PerceptionRT checkpoint to a static batch-one FP32 ONNX graph."
-        )
+        description=("Export a trained PerceptionRT checkpoint to a static batch-one ONNX graph.")
     )
     parser.add_argument(
         "--config",
@@ -134,7 +147,12 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=DEFAULT_OUTPUT_PATH,
+        default=None,
+    )
+    parser.add_argument(
+        "--precision",
+        choices=ONNX_PRECISIONS,
+        default=DEFAULT_ONNX_PRECISION,
     )
     parser.add_argument(
         "--opset-version",
@@ -148,19 +166,29 @@ def main() -> None:
     """Load the checkpoint and export its ONNX graph."""
     arguments = parse_arguments()
     config = load_training_config(arguments.config)
+    output_path = arguments.output
+    if output_path is None:
+        output_path = (
+            DEFAULT_FP16_OUTPUT_PATH if arguments.precision == "fp16" else DEFAULT_OUTPUT_PATH
+        )
+
     model, metadata = build_checkpoint_model(
         config,
         arguments.checkpoint,
     )
     output_path = export_model_to_onnx(
         model,
-        arguments.output,
+        output_path,
         input_size=config.crop_size,
         opset_version=arguments.opset_version,
+        precision=arguments.precision,
     )
     size_mib = output_path.stat().st_size / (1024**2)
 
-    print(f"Exported checkpoint epoch {metadata['epoch']} to {output_path}")
+    print(
+        f"Exported {arguments.precision.upper()} checkpoint "
+        f"epoch {metadata['epoch']} to {output_path}"
+    )
     print(
         f"ONNX contract: input=[1, 3, "
         f"{config.crop_height}, {config.crop_width}], "
