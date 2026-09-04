@@ -22,6 +22,25 @@ complete pipeline can be deployed efficiently on NVIDIA hardware.
 
 ## Current status
 
+### v0.6.0 release candidate — Selective TensorRT INT8 evaluation
+
+- [x] Leakage-safe Scene06 post-training calibration
+- [x] Explicit Q/DQ ONNX quantization
+- [x] Accuracy-guided selection of 13 encoder spatial-reduction convolutions
+- [x] Strongly typed TensorRT engine with FP32 external I/O
+- [x] Frozen parity gates evaluated once on held-out Scene18 samples
+- [x] Reproducible five-backend benchmark
+- [x] 116 passing tests
+
+The selective INT8 engine passed the frozen held-out gates with `0.99957031`
+minimum semantic agreement and at least `99.4072%` numerical-tolerance
+coverage for every output. It achieved `15.841 ms` mean latency and
+`63.13 FPS` on the RTX 3060 Laptop GPU: `1.046×` faster than TensorRT FP32,
+but substantially slower than TensorRT FP16. FP16 therefore remains the
+recommended deployment configuration. See
+[`docs/tensorrt_int8.md`](docs/tensorrt_int8.md) for the selection study,
+protocol, results and limitations.
+
 ### v0.5.0 — TensorRT FP16 optimization
 
 - [x] Native FP16 ONNX export from the epoch-16 checkpoint
@@ -340,8 +359,7 @@ Validate the FP16 engine against the FP32 PyTorch checkpoint:
 python -m perception_rt.validate_tensorrt --precision fp16
 ~~~
 
-Benchmark PyTorch FP32, ONNX Runtime CUDA FP32, TensorRT FP32 and
-TensorRT FP16:
+Benchmark all current inference backends:
 
 ~~~bash
 python -m perception_rt.benchmark_inference
@@ -361,6 +379,48 @@ The FP16 ONNX model is `52.71 MiB`; the generated engine is `85.00 MiB`.
 Detailed precision design, parity criteria, benchmark methodology and
 limitations are documented in
 [`docs/tensorrt_fp16.md`](docs/tensorrt_fp16.md).
+
+## Selective TensorRT INT8 evaluation
+
+Create the calibrated Q/DQ ONNX model using only Scene06 validation data:
+
+~~~bash
+python -m perception_rt.quantize_onnx
+~~~
+
+Build and validate the selective INT8 TensorRT engine:
+
+~~~bash
+python -m perception_rt.build_tensorrt --precision int8
+python -m perception_rt.validate_tensorrt --precision int8
+~~~
+
+Run the five-backend device-resident benchmark:
+
+~~~bash
+python -m perception_rt.benchmark_inference
+~~~
+
+Only the 13 encoder attention spatial-reduction convolutions are quantized.
+The engine retains FP32 input and output tensors; explicit Q/DQ nodes control
+internal INT8 execution. The INT8 ONNX model is `88.50 MiB`, and the generated
+engine is `122.69 MiB`.
+
+| Backend | Mean latency | P95 latency | Throughput |
+|---|---:|---:|---:|
+| PyTorch FP32 | 23.661 ms | 24.380 ms | 42.26 FPS |
+| ONNX Runtime CUDA FP32 | 26.577 ms | 27.070 ms | 37.63 FPS |
+| TensorRT FP32 | 16.571 ms | 16.944 ms | 60.35 FPS |
+| TensorRT FP16 | 6.727 ms | 6.819 ms | 148.66 FPS |
+| TensorRT selective INT8 | 15.841 ms | 16.045 ms | 63.13 FPS |
+
+Selective INT8 was `1.046×` faster than TensorRT FP32 but approximately
+`2.354×` slower than TensorRT FP16. This result is retained because it
+demonstrates leakage-safe calibration, sensitivity analysis, explicit-Q/DQ
+deployment and evidence-based rejection of a weaker optimization path.
+
+Detailed calibration, selection, parity, benchmark methodology and limitations
+are documented in [`docs/tensorrt_int8.md`](docs/tensorrt_int8.md).
 
 ## Development environment
 

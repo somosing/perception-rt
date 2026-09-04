@@ -36,8 +36,40 @@ from perception_rt.validate_onnx import (
 
 DEFAULT_UNCERTAINTY_RELATIVE_TOLERANCE = math.expm1(DEFAULT_ABSOLUTE_TOLERANCE)
 DEFAULT_FP16_MINIMUM_WITHIN_TOLERANCE_FRACTION = 0.99
+DEFAULT_INT8_MINIMUM_SEMANTIC_AGREEMENT = 0.9995
+DEFAULT_INT8_MINIMUM_WITHIN_TOLERANCE_FRACTION = 0.98
 DEFAULT_TENSORRT_PARITY_REPORT_PATH = Path("outputs/tensorrt/parity.json")
 DEFAULT_FP16_TENSORRT_PARITY_REPORT_PATH = Path("outputs/tensorrt/parity_fp16.json")
+DEFAULT_INT8_TENSORRT_PARITY_REPORT_PATH = Path("outputs/tensorrt/parity_int8.json")
+
+
+def resolve_parity_profile(
+    precision: str,
+) -> tuple[Path, float, float, torch.dtype]:
+    """Resolve report path, gates and external tensor dtype."""
+    if precision == "fp32":
+        return (
+            DEFAULT_TENSORRT_PARITY_REPORT_PATH,
+            DEFAULT_MINIMUM_SEMANTIC_AGREEMENT,
+            DEFAULT_MINIMUM_WITHIN_TOLERANCE_FRACTION,
+            torch.float32,
+        )
+    if precision == "fp16":
+        return (
+            DEFAULT_FP16_TENSORRT_PARITY_REPORT_PATH,
+            DEFAULT_MINIMUM_SEMANTIC_AGREEMENT,
+            DEFAULT_FP16_MINIMUM_WITHIN_TOLERANCE_FRACTION,
+            torch.float16,
+        )
+    if precision == "int8":
+        return (
+            DEFAULT_INT8_TENSORRT_PARITY_REPORT_PATH,
+            DEFAULT_INT8_MINIMUM_SEMANTIC_AGREEMENT,
+            DEFAULT_INT8_MINIMUM_WITHIN_TOLERANCE_FRACTION,
+            torch.float32,
+        )
+
+    raise ValueError(f"Unsupported TensorRT precision {precision!r}")
 
 
 def validate_sample_indices(
@@ -158,7 +190,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--minimum-semantic-agreement",
         type=float,
-        default=DEFAULT_MINIMUM_SEMANTIC_AGREEMENT,
+        default=None,
     )
     parser.add_argument(
         "--output",
@@ -172,20 +204,23 @@ def main() -> None:
     """Run held-out PyTorch–TensorRT parity validation."""
     arguments = parse_arguments()
     _, default_engine_path = resolve_default_paths(arguments.precision)
+    (
+        default_report_path,
+        default_semantic_agreement,
+        default_tolerance_fraction,
+        expected_runner_dtype,
+    ) = resolve_parity_profile(arguments.precision)
     engine_path = arguments.engine or default_engine_path
-    report_path = arguments.output or (
-        DEFAULT_FP16_TENSORRT_PARITY_REPORT_PATH
-        if arguments.precision == "fp16"
-        else DEFAULT_TENSORRT_PARITY_REPORT_PATH
+    report_path = arguments.output or default_report_path
+    minimum_semantic_agreement = (
+        arguments.minimum_semantic_agreement
+        if arguments.minimum_semantic_agreement is not None
+        else default_semantic_agreement
     )
     minimum_tolerance_fraction = (
         arguments.minimum_within_tolerance_fraction
         if arguments.minimum_within_tolerance_fraction is not None
-        else (
-            DEFAULT_FP16_MINIMUM_WITHIN_TOLERANCE_FRACTION
-            if arguments.precision == "fp16"
-            else DEFAULT_MINIMUM_WITHIN_TOLERANCE_FRACTION
-        )
+        else default_tolerance_fraction
     )
 
     for name, value in (
@@ -199,7 +234,7 @@ def main() -> None:
         if value < 0.0:
             raise ValueError(f"{name} tolerance must be nonnegative")
 
-    if not 0.0 <= arguments.minimum_semantic_agreement <= 1.0:
+    if not 0.0 <= minimum_semantic_agreement <= 1.0:
         raise ValueError("Semantic agreement threshold must be within [0, 1]")
 
     if not 0.0 <= minimum_tolerance_fraction <= 1.0:
@@ -226,7 +261,6 @@ def main() -> None:
         engine_path,
         device=device,
     )
-    expected_runner_dtype = torch.float16 if arguments.precision == "fp16" else torch.float32
     if runner.dtype != expected_runner_dtype:
         raise ValueError(
             f"Requested {arguments.precision.upper()} validation, but engine uses {runner.dtype}"
@@ -248,7 +282,7 @@ def main() -> None:
             absolute_tolerance=arguments.absolute_tolerance,
             relative_tolerance=arguments.relative_tolerance,
             uncertainty_relative_tolerance=(arguments.uncertainty_relative_tolerance),
-            minimum_semantic_agreement=(arguments.minimum_semantic_agreement),
+            minimum_semantic_agreement=(minimum_semantic_agreement),
             minimum_within_tolerance_fraction=(minimum_tolerance_fraction),
         )
         result["index"] = index
@@ -285,7 +319,7 @@ def main() -> None:
             "absolute": arguments.absolute_tolerance,
             "relative": arguments.relative_tolerance,
             "uncertainty_relative": (arguments.uncertainty_relative_tolerance),
-            "minimum_semantic_agreement": (arguments.minimum_semantic_agreement),
+            "minimum_semantic_agreement": (minimum_semantic_agreement),
             "minimum_within_tolerance_fraction": (minimum_tolerance_fraction),
         },
         "summary": summary,
