@@ -8,6 +8,7 @@ from perception_rt.build_tensorrt import (
     DEFAULT_ENGINE_PATH,
     DEFAULT_FP16_ENGINE_PATH,
     DEFAULT_FP16_ONNX_PATH,
+    DEFAULT_INT8_ENGINE_PATH,
     DEFAULT_ONNX_PATH,
     EXPECTED_INPUT_SHAPE,
     EXPECTED_OUTPUT_SHAPES,
@@ -20,6 +21,7 @@ from perception_rt.export_onnx import (
     ONNX_INPUT_NAME,
     ONNX_OUTPUT_NAMES,
 )
+from perception_rt.quantize_onnx import DEFAULT_INT8_ONNX_PATH
 
 
 class FakeTensor:
@@ -162,6 +164,10 @@ def test_parse_onnx_network_rejects_missing_file(
         (
             "fp16",
             (DEFAULT_FP16_ONNX_PATH, DEFAULT_FP16_ENGINE_PATH),
+        ),
+        (
+            "int8",
+            (DEFAULT_INT8_ONNX_PATH, DEFAULT_INT8_ENGINE_PATH),
         ),
     ],
 )

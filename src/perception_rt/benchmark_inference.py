@@ -1,4 +1,4 @@
-"""Benchmark FP32 backends and optimized TensorRT FP16 inference."""
+"""Benchmark FP32, FP16 and selective INT8 inference backends."""
 
 import argparse
 import json
@@ -13,6 +13,7 @@ import torch
 from perception_rt.build_tensorrt import (
     DEFAULT_ENGINE_PATH,
     DEFAULT_FP16_ENGINE_PATH,
+    DEFAULT_INT8_ENGINE_PATH,
     EXPECTED_OUTPUT_SHAPES,
 )
 from perception_rt.evaluate import build_test_loader
@@ -32,7 +33,7 @@ from perception_rt.validate_onnx import create_onnx_session
 DEFAULT_WARMUP_ITERATIONS = 30
 DEFAULT_MEASURED_ITERATIONS = 100
 DEFAULT_BENCHMARK_SAMPLE_INDEX = 0
-DEFAULT_BENCHMARK_REPORT_PATH = Path("outputs/tensorrt/benchmark_fp16.json")
+DEFAULT_BENCHMARK_REPORT_PATH = Path("outputs/tensorrt/benchmark_int8.json")
 
 
 def validate_benchmark_parameters(
@@ -161,8 +162,8 @@ def parse_arguments() -> argparse.Namespace:
     """Parse benchmark command-line arguments."""
     parser = argparse.ArgumentParser(
         description=(
-            "Benchmark device-resident synchronous FP32 inference "
-            "and optimized TensorRT FP16 inference."
+            "Benchmark device-resident synchronous FP32, TensorRT FP16 "
+            "and selective TensorRT INT8 inference."
         )
     )
     parser.add_argument(
@@ -191,6 +192,11 @@ def parse_arguments() -> argparse.Namespace:
         default=DEFAULT_FP16_ENGINE_PATH,
     )
     parser.add_argument(
+        "--int8-engine",
+        type=Path,
+        default=DEFAULT_INT8_ENGINE_PATH,
+    )
+    parser.add_argument(
         "--sample-index",
         type=int,
         default=DEFAULT_BENCHMARK_SAMPLE_INDEX,
@@ -214,7 +220,7 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Run the four-backend FP32 and FP16 benchmark."""
+    """Run the five-backend FP32, FP16 and selective INT8 benchmark."""
     arguments = parse_arguments()
     validate_benchmark_parameters(
         arguments.warmup_iterations,
@@ -264,10 +270,17 @@ def main() -> None:
         device=device,
         logger=fp32_runner.logger,
     )
+    int8_runner = TensorRTRunner(
+        arguments.int8_engine,
+        device=device,
+        logger=fp32_runner.logger,
+    )
     if fp32_runner.dtype != torch.float32:
         raise ValueError("FP32 engine path does not contain an FP32 engine")
     if fp16_runner.dtype != torch.float16:
         raise ValueError("FP16 engine path does not contain an FP16 engine")
+    if int8_runner.dtype != torch.float32:
+        raise ValueError("INT8 engine path must expose FP32 input and outputs")
 
     def run_pytorch() -> None:
         with torch.inference_mode():
@@ -282,6 +295,9 @@ def main() -> None:
     def run_tensorrt_fp16() -> None:
         fp16_runner.infer(image_fp16)
 
+    def run_tensorrt_int8() -> None:
+        int8_runner.infer(image)
+
     def synchronize() -> None:
         torch.cuda.synchronize(device)
 
@@ -293,6 +309,7 @@ def main() -> None:
         ),
         ("tensorrt_fp32", run_tensorrt_fp32),
         ("tensorrt_fp16", run_tensorrt_fp16),
+        ("tensorrt_int8", run_tensorrt_int8),
     )
 
     results = {
@@ -307,6 +324,7 @@ def main() -> None:
 
     tensorrt_fp32 = results["tensorrt_fp32"]
     tensorrt_fp16 = results["tensorrt_fp16"]
+    tensorrt_int8 = results["tensorrt_int8"]
 
     tensorrt_fp32["speedup_vs_pytorch_fp32"] = calculate_speedup(
         results["pytorch_fp32"]["mean_ms"],
@@ -330,6 +348,17 @@ def main() -> None:
         tensorrt_fp16["mean_ms"],
     )
 
+    for reference_name in (
+        "pytorch_fp32",
+        "onnx_runtime_cuda_fp32",
+        "tensorrt_fp32",
+        "tensorrt_fp16",
+    ):
+        tensorrt_int8[f"speedup_vs_{reference_name}"] = calculate_speedup(
+            results[reference_name]["mean_ms"],
+            tensorrt_int8["mean_ms"],
+        )
+
     report = {
         "sample": {
             "index": arguments.sample_index,
@@ -338,7 +367,7 @@ def main() -> None:
             "frame": int(sample["frame"]),
         },
         "input_shape": list(image.shape),
-        "precisions": ["FP32", "FP16"],
+        "precisions": ["FP32", "FP16", "selective INT8"],
         "checkpoint_epoch": metadata["epoch"],
         "warmup_iterations": (arguments.warmup_iterations),
         "measured_iterations": (arguments.measured_iterations),
@@ -395,6 +424,13 @@ def main() -> None:
         "vs PyTorch FP32, "
         f"{tensorrt_fp16['speedup_vs_onnx_runtime_cuda_fp32']:.3f}x "
         "vs ONNX Runtime CUDA FP32"
+    )
+    print(
+        "TensorRT selective INT8 speedup: "
+        f"{tensorrt_int8['speedup_vs_tensorrt_fp32']:.3f}x "
+        "vs TensorRT FP32, "
+        f"{tensorrt_int8['speedup_vs_tensorrt_fp16']:.3f}x "
+        "vs TensorRT FP16"
     )
     print(f"Saved benchmark report: {arguments.output}")
 

@@ -1,4 +1,4 @@
-"""Build a static FP32 TensorRT engine from the PerceptionRT ONNX model."""
+"""Build static TensorRT engines from PerceptionRT ONNX models."""
 
 import argparse
 from pathlib import Path
@@ -11,13 +11,15 @@ from perception_rt.export_onnx import (
     ONNX_INPUT_NAME,
     ONNX_OUTPUT_NAMES,
 )
+from perception_rt.quantize_onnx import DEFAULT_INT8_ONNX_PATH
 
 DEFAULT_ONNX_PATH = DEFAULT_OUTPUT_PATH
 DEFAULT_FP16_ONNX_PATH = DEFAULT_FP16_OUTPUT_PATH
 DEFAULT_ENGINE_PATH = Path("outputs/tensorrt/perception_rt_mit_b2_fp32.engine")
 DEFAULT_FP16_ENGINE_PATH = Path("outputs/tensorrt/perception_rt_mit_b2_fp16.engine")
+DEFAULT_INT8_ENGINE_PATH = Path("outputs/tensorrt/perception_rt_mit_b2_int8.engine")
 DEFAULT_TENSORRT_PRECISION = "fp32"
-TENSORRT_PRECISIONS = ("fp32", "fp16")
+TENSORRT_PRECISIONS = ("fp32", "fp16", "int8")
 DEFAULT_WORKSPACE_MIB = 1024
 EXPECTED_INPUT_SHAPE = (1, 3, 320, 640)
 EXPECTED_OUTPUT_SHAPES = {
@@ -35,6 +37,8 @@ def resolve_default_paths(
         return DEFAULT_ONNX_PATH, DEFAULT_ENGINE_PATH
     if precision == "fp16":
         return DEFAULT_FP16_ONNX_PATH, DEFAULT_FP16_ENGINE_PATH
+    if precision == "int8":
+        return DEFAULT_INT8_ONNX_PATH, DEFAULT_INT8_ENGINE_PATH
 
     raise ValueError(
         f"Unsupported TensorRT precision {precision!r}; choose from {TENSORRT_PRECISIONS}"

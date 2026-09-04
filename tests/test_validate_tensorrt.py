@@ -10,7 +10,11 @@ from perception_rt.validate_onnx import (
 )
 from perception_rt.validate_tensorrt import (
     DEFAULT_FP16_MINIMUM_WITHIN_TOLERANCE_FRACTION,
+    DEFAULT_INT8_MINIMUM_SEMANTIC_AGREEMENT,
+    DEFAULT_INT8_MINIMUM_WITHIN_TOLERANCE_FRACTION,
+    DEFAULT_INT8_TENSORRT_PARITY_REPORT_PATH,
     DEFAULT_UNCERTAINTY_RELATIVE_TOLERANCE,
+    resolve_parity_profile,
     run_tensorrt_sample_parity,
     validate_sample_indices,
 )
@@ -18,6 +22,20 @@ from perception_rt.validate_tensorrt import (
 
 def test_fp16_requires_ninety_nine_percent_pixel_coverage() -> None:
     assert DEFAULT_FP16_MINIMUM_WITHIN_TOLERANCE_FRACTION == 0.99
+
+
+def test_int8_uses_frozen_held_out_parity_gates() -> None:
+    report, semantic_gate, coverage_gate, dtype = resolve_parity_profile("int8")
+
+    assert report == DEFAULT_INT8_TENSORRT_PARITY_REPORT_PATH
+    assert semantic_gate == (DEFAULT_INT8_MINIMUM_SEMANTIC_AGREEMENT) == 0.9995
+    assert coverage_gate == (DEFAULT_INT8_MINIMUM_WITHIN_TOLERANCE_FRACTION) == 0.98
+    assert dtype == torch.float32
+
+
+def test_parity_profile_rejects_unknown_precision() -> None:
+    with pytest.raises(ValueError, match="Unsupported TensorRT precision"):
+        resolve_parity_profile("int4")
 
 
 def test_uncertainty_tolerance_is_log_equivalent() -> None:
