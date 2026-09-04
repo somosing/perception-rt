@@ -22,6 +22,24 @@ complete pipeline can be deployed efficiently on NVIDIA hardware.
 
 ## Current status
 
+### v0.7.0 release candidate — Native C++ TensorRT runtime
+
+- [x] Standalone C++17 TensorRT FP16 inference executable
+- [x] CMake build using pinned TensorRT and CUDA runtime headers
+- [x] Static four-tensor contract validation
+- [x] Reusable CUDA device buffers and a dedicated non-default stream
+- [x] Raw FP16 input and output interchange
+- [x] Five-sample native C++–Python TensorRT parity validation
+- [x] Reproducible device-resident native benchmark
+- [x] 128 passing Python tests and one passing CTest
+
+The native executable produced bit-for-bit identical outputs to the Python
+TensorRT runtime on all three outputs for five deterministic held-out Scene18
+samples. On the RTX 3060 Laptop GPU it achieved `6.603 ms` mean latency,
+`6.646 ms` P95 latency and `151.45 FPS`. See
+[`docs/native_cpp_tensorrt.md`](docs/native_cpp_tensorrt.md) for the build,
+validation, benchmark methodology and limitations.
+
 ### v0.6.0 — Selective TensorRT INT8 evaluation
 
 - [x] Leakage-safe Scene06 post-training calibration
@@ -421,6 +439,53 @@ deployment and evidence-based rejection of a weaker optimization path.
 
 Detailed calibration, selection, parity, benchmark methodology and limitations
 are documented in [`docs/tensorrt_int8.md`](docs/tensorrt_int8.md).
+
+## Native C++ TensorRT deployment
+
+Install the Python deployment dependencies, then configure the native build:
+
+~~~bash
+python -m pip install -e ".[dev,export,tensorrt]"
+bash scripts/build_native_cpp.sh
+~~~
+
+The setup script downloads only the pinned TensorRT and CUDA development-header
+packages into the ignored `.venv/` directory. It does not require `sudo`, a
+system TensorRT installation, the complete CUDA toolkit or `nvcc`.
+
+Run native FP16 inference using a normalized raw tensor:
+
+~~~bash
+build/native/perception_rt_native \
+    --engine outputs/tensorrt/perception_rt_mit_b2_fp16.engine \
+    --input outputs/native_cpp/image.fp16.bin \
+    --output-dir outputs/native_cpp/predictions
+~~~
+
+Validate native output parity and reproduce the benchmark:
+
+~~~bash
+python -m perception_rt.validate_native_tensorrt
+python -m perception_rt.benchmark_native_tensorrt
+~~~
+
+| Native TensorRT FP16 metric | Result |
+|---|---:|
+| Mean latency | 6.603 ms |
+| P95 latency | 6.646 ms |
+| Throughput | 151.45 FPS |
+| Minimum exact output fraction | 100% |
+| Minimum semantic argmax agreement | 100% |
+
+The timing covers synchronous TensorRT execution with device-resident input and
+output buffers. Engine loading, preprocessing, host-to-device input transfer and
+device-to-host output transfer are excluded. The current native contract is
+static batch-one FP16 tensor inference; image decoding and ROS 2 integration are
+future stages.
+
+Full build instructions, binary formats, validation evidence and portability
+limitations are documented in
+[`docs/native_cpp_tensorrt.md`](docs/native_cpp_tensorrt.md).
 
 ## Development environment
 
