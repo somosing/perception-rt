@@ -22,7 +22,7 @@ complete pipeline can be deployed efficiently on NVIDIA hardware.
 
 ## Current status
 
-### v0.6.0 release candidate — Selective TensorRT INT8 evaluation
+### v0.6.0 — Selective TensorRT INT8 evaluation
 
 - [x] Leakage-safe Scene06 post-training calibration
 - [x] Explicit Q/DQ ONNX quantization
