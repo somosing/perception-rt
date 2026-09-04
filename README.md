@@ -22,7 +22,7 @@ complete pipeline can be deployed efficiently on NVIDIA hardware.
 
 ## Current status
 
-### v0.7.0 release candidate — Native C++ TensorRT runtime
+### v0.7.0 — Native C++ TensorRT runtime
 
 - [x] Standalone C++17 TensorRT FP16 inference executable
 - [x] CMake build using pinned TensorRT and CUDA runtime headers
