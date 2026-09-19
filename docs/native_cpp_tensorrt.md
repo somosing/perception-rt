@@ -1,6 +1,6 @@
 # Native C++ TensorRT deployment
 
-This page documents the PerceptionRT native C++ TensorRT FP16 deployment pipeline. The v0.8.0 release candidate extends the validated v0.7.0 raw-tensor runtime with direct image preprocessing and native prediction postprocessing.
+This page documents the PerceptionRT native C++ TensorRT FP16 deployment pipeline. The v0.8.0 release extends the validated v0.7.0 raw-tensor runtime with direct image preprocessing and native prediction postprocessing.
 
 ## Scope
 

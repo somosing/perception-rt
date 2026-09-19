@@ -22,7 +22,7 @@ complete pipeline can be deployed efficiently on NVIDIA hardware.
 
 ## Current status
 
-### v0.8.0 release candidate — Native image-to-prediction pipeline
+### v0.8.0 — Native image-to-prediction pipeline
 
 - [x] Direct OpenCV image decoding in C++
 - [x] Deterministic `320 × 640` center-crop preprocessing
