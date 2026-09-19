@@ -48,6 +48,24 @@ The validated device-resident benchmark remains `6.603 ms` mean latency,
 These numbers measure TensorRT inference only, not complete image-to-output
 latency.
 
+### v0.7.0 — Native C++ TensorRT runtime
+
+- [x] Standalone C++17 TensorRT FP16 inference executable
+- [x] CMake build using pinned TensorRT and CUDA runtime headers
+- [x] Static four-tensor contract validation
+- [x] Reusable CUDA device buffers and a dedicated non-default stream
+- [x] Raw FP16 input and output interchange
+- [x] Five-sample native C++–Python TensorRT parity validation
+- [x] Reproducible device-resident native benchmark
+- [x] 128 passing Python tests and one passing CTest
+
+The native executable produced bit-for-bit identical outputs to the Python
+TensorRT runtime on all three outputs for five deterministic held-out Scene18
+samples. On the RTX 3060 Laptop GPU it achieved `6.603 ms` mean latency,
+`6.646 ms` P95 latency and `151.45 FPS`. See
+[`docs/native_cpp_tensorrt.md`](docs/native_cpp_tensorrt.md) for the build,
+validation, benchmark methodology and limitations.
+
 ### v0.6.0 — Selective TensorRT INT8 evaluation
 
 - [x] Leakage-safe Scene06 post-training calibration
