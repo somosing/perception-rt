@@ -22,6 +22,32 @@ complete pipeline can be deployed efficiently on NVIDIA hardware.
 
 ## Current status
 
+### v0.8.0 release candidate — Native image-to-prediction pipeline
+
+- [x] Direct OpenCV image decoding in C++
+- [x] Deterministic `320 × 640` center-crop preprocessing
+- [x] BGR-to-RGB, ImageNet normalization and HWC-to-CHW conversion
+- [x] FP32-to-FP16 preprocessing with bit-exact Python parity
+- [x] Direct `--image` inference while preserving raw `--input`
+- [x] Native semantic, metric-depth and uncertainty postprocessing
+- [x] Semantic, depth and uncertainty PNG outputs
+- [x] Bit-exact `--image` versus `--input` TensorRT outputs
+- [x] 128 passing Python tests and two passing CTests
+
+The native executable now accepts an image directly, reproduces the Python
+deployment preprocessing in C++, runs the validated TensorRT FP16 engine and
+writes raw prediction tensors plus semantic, depth and uncertainty
+visualizations.
+
+On the deterministic development image, all `614,400` FP16 preprocessing
+values matched the Python reference exactly. The resulting TensorRT outputs
+also matched the existing raw-FP16 input path bit-for-bit.
+
+The validated device-resident benchmark remains `6.603 ms` mean latency,
+`6.646 ms` P95 latency and `151.45 FPS` on the RTX 3060 Laptop GPU.
+These numbers measure TensorRT inference only, not complete image-to-output
+latency.
+
 ### v0.7.0 — Native C++ TensorRT runtime
 
 - [x] Standalone C++17 TensorRT FP16 inference executable
@@ -442,18 +468,36 @@ are documented in [`docs/tensorrt_int8.md`](docs/tensorrt_int8.md).
 
 ## Native C++ TensorRT deployment
 
-Install the Python deployment dependencies, then configure the native build:
+The native runtime now supports both direct image input and the original raw
+FP16 tensor interface.
+
+Build the native executable:
 
 ~~~bash
-python -m pip install -e ".[dev,export,tensorrt]"
+pkg-config --modversion opencv4
 bash scripts/build_native_cpp.sh
 ~~~
 
-The setup script downloads only the pinned TensorRT and CUDA development-header
-packages into the ignored `.venv/` directory. It does not require `sudo`, a
-system TensorRT installation, the complete CUDA toolkit or `nvcc`.
+Run the complete image pipeline:
 
-Run native FP16 inference using a normalized raw tensor:
+~~~bash
+build/native/perception_rt_native \
+    --engine outputs/tensorrt/perception_rt_mit_b2_fp16.engine \
+    --image datasets/vkitti2/raw/Scene02/fog/frames/rgb/Camera_0/rgb_00134.jpg \
+    --output-dir outputs/native_cpp/predictions
+~~~
+
+The `--image` path performs native OpenCV decoding, deterministic center
+cropping, BGR-to-RGB conversion, ImageNet normalization, HWC-to-CHW layout
+conversion and FP32-to-FP16 conversion before TensorRT inference.
+
+It then writes the raw network outputs plus:
+
+- `semantic.png`
+- `depth.png`
+- `uncertainty.png`
+
+The original raw-input path remains available:
 
 ~~~bash
 build/native/perception_rt_native \
@@ -462,7 +506,10 @@ build/native/perception_rt_native \
     --output-dir outputs/native_cpp/predictions
 ~~~
 
-Validate native output parity and reproduce the benchmark:
+`--image` and `--input` are mutually exclusive.
+
+Validate native output parity and reproduce the established device-resident
+benchmark:
 
 ~~~bash
 python -m perception_rt.validate_native_tensorrt
@@ -477,14 +524,12 @@ python -m perception_rt.benchmark_native_tensorrt
 | Minimum exact output fraction | 100% |
 | Minimum semantic argmax agreement | 100% |
 
-The timing covers synchronous TensorRT execution with device-resident input and
-output buffers. Engine loading, preprocessing, host-to-device input transfer and
-device-to-host output transfer are excluded. The current native contract is
-static batch-one FP16 tensor inference; image decoding and ROS 2 integration are
-future stages.
+The timing above covers synchronized TensorRT execution with device-resident
+buffers. Image decoding, preprocessing, host-device transfers and visualization
+are excluded, so it is not an end-to-end image-pipeline latency measurement.
 
-Full build instructions, binary formats, validation evidence and portability
-limitations are documented in
+Full build instructions, preprocessing behavior, tensor formats, validation
+evidence and limitations are documented in
 [`docs/native_cpp_tensorrt.md`](docs/native_cpp_tensorrt.md).
 
 ## Development environment
