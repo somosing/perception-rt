@@ -1,19 +1,18 @@
 # Native C++ TensorRT deployment
 
-This page documents the PerceptionRT v0.7.0 native C++ TensorRT FP16
-deployment baseline. It covers dependency setup, compilation, tensor
-interchange, held-out parity, benchmark methodology and current limitations.
+This page documents the PerceptionRT native C++ TensorRT FP16 deployment pipeline. The v0.8.0 release candidate extends the validated v0.7.0 raw-tensor runtime with direct image preprocessing and native prediction postprocessing.
 
 ## Scope
 
 The native deployment stage adds a standalone C++17 executable that:
 
-- deserializes the validated TensorRT FP16 engine;
-- validates its complete static I/O contract;
-- allocates reusable CUDA device buffers;
-- executes inference on a dedicated non-default CUDA stream;
-- writes the three raw FP16 outputs to binary files;
-- measures synchronized device-resident inference latency.
+- decodes images with OpenCV and applies deterministic 320 × 640 center-crop preprocessing;
+- performs BGR-to-RGB conversion, ImageNet normalization and HWC-to-CHW FP16 conversion;
+- deserializes and validates the TensorRT FP16 engine;
+- executes inference using reusable CUDA buffers and a dedicated stream;
+- writes the three raw FP16 outputs;
+- performs native semantic, metric-depth and uncertainty postprocessing;
+- writes semantic, depth and uncertainty PNG visualizations.
 
 The executable does not import Python, PyTorch, NumPy or ONNX Runtime. Python
 is used only by the validation and benchmark orchestration tools.
@@ -26,6 +25,7 @@ is used only by the validation and benchmark orchestration tools.
 | Compiler | GCC 13.3.0 |
 | CMake | 3.28.3 |
 | C++ standard | C++17 |
+| OpenCV | 4.6.0 |
 | TensorRT | 11.2.1.2 |
 | CUDA runtime | 13.0 |
 | GPU | NVIDIA GeForce RTX 3060 Laptop GPU |
@@ -93,35 +93,37 @@ The executable accepts only the validated static FP16 contract:
 Startup fails if a tensor name, order, mode, shape or type differs. This avoids
 silently executing an incompatible engine.
 
-## Binary tensor format
+## Image and tensor input
 
-Input must be a contiguous, normalized, batch-one NCHW tensor stored as raw
-little-endian FP16 values. Its exact size is `1,228,800` bytes.
+The runtime supports two mutually exclusive input modes.
 
-The executable writes:
-
-| File | Shape | Size |
-|---|---|---:|
-| `semantic_logits.fp16.bin` | `1 × 15 × 320 × 640` | 6,144,000 bytes |
-| `log_depth.fp16.bin` | `1 × 1 × 320 × 640` | 409,600 bytes |
-| `depth_log_scale.fp16.bin` | `1 × 1 × 320 × 640` | 409,600 bytes |
-
-The output files contain raw network values. Semantic argmax, depth
-exponentiation, uncertainty exponentiation, visualization and application-level
-postprocessing remain outside the native executable.
-
-Example:
+Direct image inference:
 
 ```bash
-build/native/perception_rt_native \
-    --engine outputs/tensorrt/perception_rt_mit_b2_fp16.engine \
-    --input outputs/native_cpp/image.fp16.bin \
-    --output-dir outputs/native_cpp/predictions \
-    --warmup 30 \
-    --iterations 100
+build/native/perception_rt_native \\
+    --engine outputs/tensorrt/perception_rt_mit_b2_fp16.engine \\
+    --image datasets/vkitti2/raw/Scene02/fog/frames/rgb/Camera_0/rgb_00134.jpg \\
+    --output-dir outputs/native_cpp/predictions
 ```
 
-When `--input` is omitted, the executable uses a zero tensor for smoke testing.
+The image path performs OpenCV decode, a deterministic `320 × 640` center crop, BGR-to-RGB conversion, scaling by `1/255`, ImageNet normalization, HWC-to-CHW conversion and FP32-to-FP16 conversion. On the deterministic development image all `614,400` FP16 input values matched the Python reference exactly.
+
+The original raw input path remains available:
+
+```bash
+build/native/perception_rt_native \\
+    --engine outputs/tensorrt/perception_rt_mit_b2_fp16.engine \\
+    --input outputs/native_cpp/image.fp16.bin \\
+    --output-dir outputs/native_cpp/predictions
+```
+
+Raw input must contain exactly `1,228,800` bytes. `--image` and `--input` cannot be used together.
+
+The runtime always writes the raw FP16 tensors `semantic_logits.fp16.bin`, `log_depth.fp16.bin` and `depth_log_scale.fp16.bin`. With `--image` it additionally writes `semantic.png`, `depth.png` and `uncertainty.png`.
+
+Semantic output uses argmax over 15 classes. Metric depth is decoded as `clamp(exp(log_depth), 0.001, 200.0)`. Uncertainty is decoded as `exp(clamp(depth_log_scale, -6, 6))` and represents a learned scale in log-depth space, not direct ± metres uncertainty.
+
+The integrated `--image` path produced bit-for-bit identical TensorRT outputs to the validated raw `--input` path, and the integrated PNG visualizations matched the separately validated development probes bit-for-bit.
 
 ## Native parity validation
 
@@ -187,7 +189,7 @@ prediction application latency. It is hardware- and power-state-specific.
 The release candidate passed:
 
 - 128 Python tests;
-- one CTest for the native command-line interface;
+- two CTests for the native command-line interface;
 - native engine deserialization and four-tensor contract validation;
 - finite-output smoke inference;
 - five-sample bit-exact native parity;
@@ -196,8 +198,9 @@ The release candidate passed:
 ## Limitations
 
 - Only the static batch-one FP16 engine is supported by the C++ executable.
-- RGB decoding, resizing, normalization and layout conversion are external.
-- Postprocessing and visualization remain outside the native executable.
+- Direct image preprocessing uses a fixed `320 × 640` center crop; smaller images are rejected rather than resized.
+- Depth and uncertainty PNGs are visualization products; raw tensors remain the numerical outputs.
+- OpenCV C++ development files are required.
 - TensorRT engines must be rebuilt for the target environment.
 - The measured result is specific to the RTX 3060 Laptop GPU and its runtime
   state.
