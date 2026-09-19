@@ -1,6 +1,10 @@
 #include <NvInferRuntime.h>
 #include <cuda_runtime_api.h>
 
+#include <opencv2/core.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -113,6 +117,7 @@ private:
 struct Options {
     fs::path engine{kDefaultEngine};
     std::optional<fs::path> input;
+    std::optional<fs::path> image;
     fs::path outputDirectory{kDefaultOutputDirectory};
     int warmupIterations{kDefaultWarmupIterations};
     int measuredIterations{kDefaultMeasuredIterations};
@@ -125,6 +130,7 @@ void printUsage(std::ostream& output) {
         << "Options:\n"
         << "  --engine PATH       FP16 TensorRT engine\n"
         << "  --input PATH        Raw FP16 NCHW input; zeros when omitted\n"
+        << "  --image PATH        RGB image; center-cropped and normalized internally\n"
         << "  --output-dir PATH   Directory for raw FP16 outputs\n"
         << "  --warmup N          Warmup iterations (default: 30)\n"
         << "  --iterations N      Measured iterations (default: 100)\n"
@@ -166,6 +172,8 @@ Options parseOptions(int argc, char** argv) {
             options.engine = requireValue(index, argc, argv);
         } else if (argument == "--input") {
             options.input = requireValue(index, argc, argv);
+        } else if (argument == "--image") {
+            options.image = requireValue(index, argc, argv);
         } else if (argument == "--output-dir") {
             options.outputDirectory = requireValue(index, argc, argv);
         } else if (argument == "--warmup") {
@@ -177,6 +185,10 @@ Options parseOptions(int argc, char** argv) {
         } else {
             throw std::invalid_argument("Unknown argument: " + argument);
         }
+    }
+
+    if (options.input && options.image) {
+        throw std::invalid_argument("--input and --image are mutually exclusive");
     }
 
     if (options.warmupIterations < 0) {
@@ -263,6 +275,81 @@ void validateEngine(nvinfer1::ICudaEngine const& engine) {
     }
 }
 
+std::vector<std::uint16_t> preprocessImage(
+    fs::path const& path,
+    std::size_t expectedElements) {
+    constexpr int width = 640;
+    constexpr int height = 320;
+    constexpr int channels = 3;
+
+    cv::Mat imageBgr = cv::imread(path.string(), cv::IMREAD_COLOR);
+    if (imageBgr.empty()) {
+        throw std::runtime_error("Could not read image: " + path.string());
+    }
+
+    if (imageBgr.cols < width || imageBgr.rows < height) {
+        throw std::runtime_error(
+            "Image must be at least 640x320 pixels: " + path.string());
+    }
+
+    int const left = (imageBgr.cols - width) / 2;
+    int const top = (imageBgr.rows - height) / 2;
+
+    cv::Mat croppedBgr = imageBgr(
+        cv::Rect(left, top, width, height));
+
+    cv::Mat rgb;
+    cv::cvtColor(croppedBgr, rgb, cv::COLOR_BGR2RGB);
+
+    cv::Mat rgbFloat;
+    rgb.convertTo(rgbFloat, CV_32FC3, 1.0 / 255.0);
+
+    constexpr std::array<float, channels> mean{
+        0.485F, 0.456F, 0.406F};
+    constexpr std::array<float, channels> stddev{
+        0.229F, 0.224F, 0.225F};
+
+    std::vector<float> chw(
+        static_cast<std::size_t>(channels * height * width));
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            cv::Vec3f const pixel = rgbFloat.at<cv::Vec3f>(y, x);
+
+            for (int channel = 0; channel < channels; ++channel) {
+                std::size_t const index =
+                    static_cast<std::size_t>(channel) * height * width +
+                    static_cast<std::size_t>(y) * width +
+                    static_cast<std::size_t>(x);
+
+                chw[index] =
+                    (pixel[channel] - mean[channel]) / stddev[channel];
+            }
+        }
+    }
+
+    if (chw.size() != expectedElements) {
+        throw std::runtime_error("Preprocessed image has unexpected size");
+    }
+
+    cv::Mat fp32(
+        1,
+        static_cast<int>(chw.size()),
+        CV_32F,
+        chw.data());
+
+    cv::Mat fp16;
+    cv::convertFp16(fp32, fp16);
+
+    std::vector<std::uint16_t> values(chw.size());
+    std::memcpy(
+        values.data(),
+        fp16.data,
+        values.size() * sizeof(std::uint16_t));
+
+    return values;
+}
+
 std::vector<std::uint16_t> loadInput(
     std::optional<fs::path> const& path,
     std::size_t elementCountValue) {
@@ -310,6 +397,141 @@ void writeTensor(
     if (!output) {
         throw std::runtime_error("Could not write " + path.string());
     }
+}
+
+std::vector<float> fp16ToFloat32(
+    std::vector<std::uint16_t> const& values) {
+    cv::Mat fp16(
+        1,
+        static_cast<int>(values.size()),
+        CV_16S);
+
+    std::memcpy(
+        fp16.data,
+        values.data(),
+        values.size() * sizeof(std::uint16_t));
+
+    cv::Mat fp32;
+    cv::convertFp16(fp16, fp32);
+
+    float const* begin = fp32.ptr<float>();
+
+    return std::vector<float>(
+        begin,
+        begin + fp32.total());
+}
+
+void writeVisualizations(
+    fs::path const& directory,
+    std::vector<std::uint16_t> const& semanticHalf,
+    std::vector<std::uint16_t> const& logDepthHalf,
+    std::vector<std::uint16_t> const& logScaleHalf) {
+    constexpr int width = 640;
+    constexpr int height = 320;
+    constexpr int numberOfClasses = 15;
+    constexpr std::size_t pixelCount =
+        static_cast<std::size_t>(width) * height;
+
+    auto const semanticLogits = fp16ToFloat32(semanticHalf);
+    auto const logDepth = fp16ToFloat32(logDepthHalf);
+    auto const logScale = fp16ToFloat32(logScaleHalf);
+
+    if (semanticLogits.size() != numberOfClasses * pixelCount ||
+        logDepth.size() != pixelCount ||
+        logScale.size() != pixelCount) {
+        throw std::runtime_error(
+            "Unexpected tensor size during postprocessing");
+    }
+
+    std::array<cv::Vec3b, numberOfClasses> const classColors{{
+        cv::Vec3b{200,   0, 210},  // Terrain
+        cv::Vec3b{255, 200,  90},  // Sky
+        cv::Vec3b{  0, 199,   0},  // Tree
+        cv::Vec3b{  0, 240,  90},  // Vegetation
+        cv::Vec3b{140, 140, 140},  // Building
+        cv::Vec3b{100,  60, 100},  // Road
+        cv::Vec3b{255, 100, 250},  // GuardRail
+        cv::Vec3b{  0, 255, 255},  // TrafficSign
+        cv::Vec3b{  0, 200, 200},  // TrafficLight
+        cv::Vec3b{  0, 130, 255},  // Pole
+        cv::Vec3b{ 80,  80,  80},  // Misc
+        cv::Vec3b{ 60,  60, 160},  // Truck
+        cv::Vec3b{ 80, 127, 255},  // Car
+        cv::Vec3b{139, 139,   0},  // Van
+        cv::Vec3b{  0,   0,   0}   // Undefined
+    }};
+
+    cv::Mat semanticImage(height, width, CV_8UC3);
+    cv::Mat depthImage(height, width, CV_8UC1);
+    cv::Mat uncertaintyImage(height, width, CV_8UC1);
+
+    for (std::size_t pixel = 0; pixel < pixelCount; ++pixel) {
+        int bestClass = 0;
+        float bestScore = semanticLogits[pixel];
+
+        for (int classId = 1;
+             classId < numberOfClasses;
+             ++classId) {
+            std::size_t const index =
+                static_cast<std::size_t>(classId) * pixelCount +
+                pixel;
+
+            if (semanticLogits[index] > bestScore) {
+                bestScore = semanticLogits[index];
+                bestClass = classId;
+            }
+        }
+
+        int const y =
+            static_cast<int>(pixel / static_cast<std::size_t>(width));
+        int const x =
+            static_cast<int>(pixel % static_cast<std::size_t>(width));
+
+        semanticImage.at<cv::Vec3b>(y, x) =
+            classColors[static_cast<std::size_t>(bestClass)];
+
+        float const depth = std::clamp(
+            std::exp(logDepth[pixel]),
+            1.0e-3F,
+            200.0F);
+
+        float const uncertainty = std::exp(
+            std::clamp(logScale[pixel], -6.0F, 6.0F));
+
+        depthImage.at<std::uint8_t>(y, x) =
+            static_cast<std::uint8_t>(
+                std::clamp(
+                    255.0F * depth / 200.0F,
+                    0.0F,
+                    255.0F));
+
+        uncertaintyImage.at<std::uint8_t>(y, x) =
+            static_cast<std::uint8_t>(
+                std::clamp(
+                    255.0F * uncertainty / 403.4288F,
+                    0.0F,
+                    255.0F));
+    }
+
+    fs::create_directories(directory);
+
+    fs::path const semanticPath = directory / "semantic.png";
+    fs::path const depthPath = directory / "depth.png";
+    fs::path const uncertaintyPath = directory / "uncertainty.png";
+
+    if (!cv::imwrite(semanticPath.string(), semanticImage) ||
+        !cv::imwrite(depthPath.string(), depthImage) ||
+        !cv::imwrite(uncertaintyPath.string(), uncertaintyImage)) {
+        throw std::runtime_error(
+            "Could not write output visualizations");
+    }
+
+    std::cout << "Semantic visualization: "
+              << semanticPath << '\n';
+    std::cout << "Depth visualization: "
+              << depthPath << '\n';
+    std::cout << "Uncertainty visualization: "
+              << uncertaintyPath << '\n';
 }
 
 double percentile(std::vector<double> values, double fraction) {
@@ -366,8 +588,13 @@ int run(Options const& options) {
     std::array<std::unique_ptr<DeviceBuffer>, kTensorSpecs.size()> deviceBuffers;
     std::array<std::vector<std::uint16_t>, kTensorSpecs.size()> hostTensors;
 
-    hostTensors[0] = loadInput(
-        options.input, elementCount(kTensorSpecs[0].shape));
+    auto const inputElements = elementCount(kTensorSpecs[0].shape);
+
+    if (options.image) {
+        hostTensors[0] = preprocessImage(*options.image, inputElements);
+    } else {
+        hostTensors[0] = loadInput(options.input, inputElements);
+    }
 
     for (std::size_t index = 0; index < kTensorSpecs.size(); ++index) {
         auto const elements = elementCount(kTensorSpecs[index].shape);
@@ -422,6 +649,14 @@ int run(Options const& options) {
         }
         writeTensor(
             options.outputDirectory, kTensorSpecs[index], hostTensors[index]);
+    }
+
+    if (options.image) {
+        writeVisualizations(
+            options.outputDirectory,
+            hostTensors[1],
+            hostTensors[2],
+            hostTensors[3]);
     }
 
     auto const mean = std::accumulate(latencies.begin(), latencies.end(), 0.0) /

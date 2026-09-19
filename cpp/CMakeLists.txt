@@ -7,6 +7,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+find_package(OpenCV REQUIRED COMPONENTS core imgcodecs imgproc)
+
 set(TENSORRT_INCLUDE_DIR "" CACHE PATH "Directory containing NvInferRuntime.h")
 set(TENSORRT_LIBRARY "" CACHE FILEPATH "Path to the TensorRT runtime library")
 set(CUDART_INCLUDE_DIR "" CACHE PATH "Directory containing cuda_runtime_api.h")
@@ -48,6 +50,7 @@ target_include_directories(
     SYSTEM PRIVATE
     "${TENSORRT_INCLUDE_DIR}"
     "${CUDART_INCLUDE_DIR}"
+    ${OpenCV_INCLUDE_DIRS}
 )
 
 target_link_libraries(
@@ -55,6 +58,7 @@ target_link_libraries(
     PRIVATE
     "${TENSORRT_LIBRARY}"
     "${CUDART_LIBRARY}"
+    ${OpenCV_LIBS}
     ${CMAKE_DL_LIBS}
 )
 
@@ -78,4 +82,21 @@ set_target_properties(
 include(CTest)
 if(BUILD_TESTING)
     add_test(NAME native_cli_help COMMAND perception_rt_native --help)
+    set_tests_properties(
+        native_cli_help
+        PROPERTIES
+        PASS_REGULAR_EXPRESSION "--image PATH"
+    )
+
+    add_test(
+        NAME native_cli_rejects_dual_input
+        COMMAND perception_rt_native
+            --input dummy.fp16
+            --image dummy.jpg
+    )
+    set_tests_properties(
+        native_cli_rejects_dual_input
+        PROPERTIES
+        WILL_FAIL TRUE
+    )
 endif()
