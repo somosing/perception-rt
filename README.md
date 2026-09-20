@@ -22,7 +22,7 @@ complete pipeline can be deployed efficiently on NVIDIA hardware.
 
 ## Current status
 
-### v0.9.0 release candidate — Native video inference pipeline
+### v0.9.0 — Native video inference pipeline
 
 - [x] Direct OpenCV video-file decoding in C++
 - [x] Frame-by-frame reuse of one TensorRT engine, execution context, CUDA stream and device buffers

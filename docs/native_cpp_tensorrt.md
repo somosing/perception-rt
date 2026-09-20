@@ -1,6 +1,6 @@
 # Native C++ TensorRT deployment
 
-This page documents the PerceptionRT native C++ TensorRT FP16 deployment pipeline. The v0.9.0 release candidate extends the validated v0.8.0 image pipeline with native video-file inference, runtime reuse across frames and application-level timing.
+This page documents the PerceptionRT native C++ TensorRT FP16 deployment pipeline. The v0.9.0 release extends the validated v0.8.0 image pipeline with native video-file inference, runtime reuse across frames and application-level timing.
 
 ## Scope
 
