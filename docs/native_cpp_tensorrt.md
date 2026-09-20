@@ -145,7 +145,7 @@ visualization and uncertainty visualization.
 `--input`, `--image` and `--video` cannot be combined. `--output-video` and
 `--max-frames` are valid only with `--video`.
 
-The runtime always writes the raw FP16 tensors `semantic_logits.fp16.bin`, `log_depth.fp16.bin` and `depth_log_scale.fp16.bin`. With `--image` it additionally writes `semantic.png`, `depth.png` and `uncertainty.png`.
+The runtime always writes the raw FP16 tensors `semantic_logits.fp16.bin`, `log_depth.fp16.bin` and `depth_log_scale.fp16.bin`. Image mode writes `semantic.png`, `depth.png` and `uncertainty.png`; video mode writes the same PNGs for the final processed frame.
 
 Semantic output uses argmax over 15 classes. Metric depth is decoded as `clamp(exp(log_depth), 0.001, 200.0)`. Uncertainty is decoded as `exp(clamp(depth_log_scale, -6, 6))` and represents a learned scale in log-depth space, not direct ± metres uncertainty.
 
