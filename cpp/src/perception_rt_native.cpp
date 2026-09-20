@@ -4,10 +4,12 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/videoio.hpp>
 
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -118,7 +120,10 @@ struct Options {
     fs::path engine{kDefaultEngine};
     std::optional<fs::path> input;
     std::optional<fs::path> image;
+    std::optional<fs::path> video;
+    std::optional<fs::path> outputVideo;
     fs::path outputDirectory{kDefaultOutputDirectory};
+    int maxFrames{0};
     int warmupIterations{kDefaultWarmupIterations};
     int measuredIterations{kDefaultMeasuredIterations};
     bool showHelp{false};
@@ -131,9 +136,12 @@ void printUsage(std::ostream& output) {
         << "  --engine PATH       FP16 TensorRT engine\n"
         << "  --input PATH        Raw FP16 NCHW input; zeros when omitted\n"
         << "  --image PATH        RGB image; center-cropped and normalized internally\n"
+        << "  --video PATH        Video file; process frames through the native pipeline\n"
+        << "  --output-video PATH Optional 2x2 visualization video for --video\n"
         << "  --output-dir PATH   Directory for raw FP16 outputs\n"
+        << "  --max-frames N      Stop video processing after N frames; 0 means all\n"
         << "  --warmup N          Warmup iterations (default: 30)\n"
-        << "  --iterations N      Measured iterations (default: 100)\n"
+        << "  --iterations N      Measured iterations for non-video mode (default: 100)\n"
         << "  -h, --help           Show this message\n";
 }
 
@@ -174,8 +182,15 @@ Options parseOptions(int argc, char** argv) {
             options.input = requireValue(index, argc, argv);
         } else if (argument == "--image") {
             options.image = requireValue(index, argc, argv);
+        } else if (argument == "--video") {
+            options.video = requireValue(index, argc, argv);
+        } else if (argument == "--output-video") {
+            options.outputVideo = requireValue(index, argc, argv);
         } else if (argument == "--output-dir") {
             options.outputDirectory = requireValue(index, argc, argv);
+        } else if (argument == "--max-frames") {
+            options.maxFrames = parseInteger(
+                requireValue(index, argc, argv), argument);
         } else if (argument == "--warmup") {
             options.warmupIterations = parseInteger(
                 requireValue(index, argc, argv), argument);
@@ -187,8 +202,23 @@ Options parseOptions(int argc, char** argv) {
         }
     }
 
-    if (options.input && options.image) {
-        throw std::invalid_argument("--input and --image are mutually exclusive");
+    int const inputModes =
+        static_cast<int>(options.input.has_value()) +
+        static_cast<int>(options.image.has_value()) +
+        static_cast<int>(options.video.has_value());
+    if (inputModes > 1) {
+        throw std::invalid_argument(
+            "--input, --image and --video are mutually exclusive");
+    }
+    if (options.outputVideo && !options.video) {
+        throw std::invalid_argument(
+            "--output-video requires --video");
+    }
+    if (options.maxFrames < 0) {
+        throw std::invalid_argument("--max-frames must be nonnegative");
+    }
+    if (options.maxFrames > 0 && !options.video) {
+        throw std::invalid_argument("--max-frames requires --video");
     }
 
     if (options.warmupIterations < 0) {
@@ -275,28 +305,34 @@ void validateEngine(nvinfer1::ICudaEngine const& engine) {
     }
 }
 
-std::vector<std::uint16_t> preprocessImage(
-    fs::path const& path,
+cv::Mat centerCropBgr(cv::Mat const& imageBgr) {
+    constexpr int width = 640;
+    constexpr int height = 320;
+
+    if (imageBgr.empty()) {
+        throw std::runtime_error("Input image/frame is empty");
+    }
+    if (imageBgr.cols < width || imageBgr.rows < height) {
+        throw std::runtime_error("Image/frame must be at least 640x320 pixels");
+    }
+
+    int const left = (imageBgr.cols - width) / 2;
+    int const top = (imageBgr.rows - height) / 2;
+    return imageBgr(cv::Rect(left, top, width, height)).clone();
+}
+
+std::vector<std::uint16_t> preprocessCroppedBgr(
+    cv::Mat const& croppedBgr,
     std::size_t expectedElements) {
     constexpr int width = 640;
     constexpr int height = 320;
     constexpr int channels = 3;
 
-    cv::Mat imageBgr = cv::imread(path.string(), cv::IMREAD_COLOR);
-    if (imageBgr.empty()) {
-        throw std::runtime_error("Could not read image: " + path.string());
-    }
-
-    if (imageBgr.cols < width || imageBgr.rows < height) {
+    if (croppedBgr.cols != width || croppedBgr.rows != height ||
+        croppedBgr.type() != CV_8UC3) {
         throw std::runtime_error(
-            "Image must be at least 640x320 pixels: " + path.string());
+            "Preprocessing expects a 640x320 three-channel BGR image");
     }
-
-    int const left = (imageBgr.cols - width) / 2;
-    int const top = (imageBgr.rows - height) / 2;
-
-    cv::Mat croppedBgr = imageBgr(
-        cv::Rect(left, top, width, height));
 
     cv::Mat rgb;
     cv::cvtColor(croppedBgr, rgb, cv::COLOR_BGR2RGB);
@@ -348,6 +384,18 @@ std::vector<std::uint16_t> preprocessImage(
         values.size() * sizeof(std::uint16_t));
 
     return values;
+}
+
+std::vector<std::uint16_t> preprocessImage(
+    fs::path const& path,
+    std::size_t expectedElements) {
+    cv::Mat imageBgr = cv::imread(path.string(), cv::IMREAD_COLOR);
+    if (imageBgr.empty()) {
+        throw std::runtime_error("Could not read image: " + path.string());
+    }
+    return preprocessCroppedBgr(
+        centerCropBgr(imageBgr),
+        expectedElements);
 }
 
 std::vector<std::uint16_t> loadInput(
@@ -421,8 +469,13 @@ std::vector<float> fp16ToFloat32(
         begin + fp32.total());
 }
 
-void writeVisualizations(
-    fs::path const& directory,
+struct PredictionVisualizations {
+    cv::Mat semantic;
+    cv::Mat depth;
+    cv::Mat uncertainty;
+};
+
+PredictionVisualizations makeVisualizations(
     std::vector<std::uint16_t> const& semanticHalf,
     std::vector<std::uint16_t> const& logDepthHalf,
     std::vector<std::uint16_t> const& logScaleHalf) {
@@ -444,37 +497,35 @@ void writeVisualizations(
     }
 
     std::array<cv::Vec3b, numberOfClasses> const classColors{{
-        cv::Vec3b{200,   0, 210},  // Terrain
-        cv::Vec3b{255, 200,  90},  // Sky
-        cv::Vec3b{  0, 199,   0},  // Tree
-        cv::Vec3b{  0, 240,  90},  // Vegetation
-        cv::Vec3b{140, 140, 140},  // Building
-        cv::Vec3b{100,  60, 100},  // Road
-        cv::Vec3b{255, 100, 250},  // GuardRail
-        cv::Vec3b{  0, 255, 255},  // TrafficSign
-        cv::Vec3b{  0, 200, 200},  // TrafficLight
-        cv::Vec3b{  0, 130, 255},  // Pole
-        cv::Vec3b{ 80,  80,  80},  // Misc
-        cv::Vec3b{ 60,  60, 160},  // Truck
-        cv::Vec3b{ 80, 127, 255},  // Car
-        cv::Vec3b{139, 139,   0},  // Van
-        cv::Vec3b{  0,   0,   0}   // Undefined
+        cv::Vec3b{200,   0, 210},
+        cv::Vec3b{255, 200,  90},
+        cv::Vec3b{  0, 199,   0},
+        cv::Vec3b{  0, 240,  90},
+        cv::Vec3b{140, 140, 140},
+        cv::Vec3b{100,  60, 100},
+        cv::Vec3b{255, 100, 250},
+        cv::Vec3b{  0, 255, 255},
+        cv::Vec3b{  0, 200, 200},
+        cv::Vec3b{  0, 130, 255},
+        cv::Vec3b{ 80,  80,  80},
+        cv::Vec3b{ 60,  60, 160},
+        cv::Vec3b{ 80, 127, 255},
+        cv::Vec3b{139, 139,   0},
+        cv::Vec3b{  0,   0,   0}
     }};
 
-    cv::Mat semanticImage(height, width, CV_8UC3);
-    cv::Mat depthImage(height, width, CV_8UC1);
-    cv::Mat uncertaintyImage(height, width, CV_8UC1);
+    PredictionVisualizations visualizations{
+        cv::Mat(height, width, CV_8UC3),
+        cv::Mat(height, width, CV_8UC1),
+        cv::Mat(height, width, CV_8UC1)};
 
     for (std::size_t pixel = 0; pixel < pixelCount; ++pixel) {
         int bestClass = 0;
         float bestScore = semanticLogits[pixel];
 
-        for (int classId = 1;
-             classId < numberOfClasses;
-             ++classId) {
+        for (int classId = 1; classId < numberOfClasses; ++classId) {
             std::size_t const index =
-                static_cast<std::size_t>(classId) * pixelCount +
-                pixel;
+                static_cast<std::size_t>(classId) * pixelCount + pixel;
 
             if (semanticLogits[index] > bestScore) {
                 bestScore = semanticLogits[index];
@@ -487,25 +538,20 @@ void writeVisualizations(
         int const x =
             static_cast<int>(pixel % static_cast<std::size_t>(width));
 
-        semanticImage.at<cv::Vec3b>(y, x) =
+        visualizations.semantic.at<cv::Vec3b>(y, x) =
             classColors[static_cast<std::size_t>(bestClass)];
 
         float const depth = std::clamp(
-            std::exp(logDepth[pixel]),
-            1.0e-3F,
-            200.0F);
+            std::exp(logDepth[pixel]), 1.0e-3F, 200.0F);
 
         float const uncertainty = std::exp(
             std::clamp(logScale[pixel], -6.0F, 6.0F));
 
-        depthImage.at<std::uint8_t>(y, x) =
+        visualizations.depth.at<std::uint8_t>(y, x) =
             static_cast<std::uint8_t>(
-                std::clamp(
-                    255.0F * depth / 200.0F,
-                    0.0F,
-                    255.0F));
+                std::clamp(255.0F * depth / 200.0F, 0.0F, 255.0F));
 
-        uncertaintyImage.at<std::uint8_t>(y, x) =
+        visualizations.uncertainty.at<std::uint8_t>(y, x) =
             static_cast<std::uint8_t>(
                 std::clamp(
                     255.0F * uncertainty / 403.4288F,
@@ -513,25 +559,85 @@ void writeVisualizations(
                     255.0F));
     }
 
+    return visualizations;
+}
+
+void writeVisualizationImages(
+    fs::path const& directory,
+    PredictionVisualizations const& visualizations) {
     fs::create_directories(directory);
 
     fs::path const semanticPath = directory / "semantic.png";
     fs::path const depthPath = directory / "depth.png";
     fs::path const uncertaintyPath = directory / "uncertainty.png";
 
-    if (!cv::imwrite(semanticPath.string(), semanticImage) ||
-        !cv::imwrite(depthPath.string(), depthImage) ||
-        !cv::imwrite(uncertaintyPath.string(), uncertaintyImage)) {
-        throw std::runtime_error(
-            "Could not write output visualizations");
+    if (!cv::imwrite(semanticPath.string(), visualizations.semantic) ||
+        !cv::imwrite(depthPath.string(), visualizations.depth) ||
+        !cv::imwrite(uncertaintyPath.string(), visualizations.uncertainty)) {
+        throw std::runtime_error("Could not write output visualizations");
     }
 
-    std::cout << "Semantic visualization: "
-              << semanticPath << '\n';
-    std::cout << "Depth visualization: "
-              << depthPath << '\n';
-    std::cout << "Uncertainty visualization: "
-              << uncertaintyPath << '\n';
+    std::cout << "Semantic visualization: " << semanticPath << '\n';
+    std::cout << "Depth visualization: " << depthPath << '\n';
+    std::cout << "Uncertainty visualization: " << uncertaintyPath << '\n';
+}
+
+void writeVisualizations(
+    fs::path const& directory,
+    std::vector<std::uint16_t> const& semanticHalf,
+    std::vector<std::uint16_t> const& logDepthHalf,
+    std::vector<std::uint16_t> const& logScaleHalf) {
+    writeVisualizationImages(
+        directory,
+        makeVisualizations(semanticHalf, logDepthHalf, logScaleHalf));
+}
+
+cv::Mat labeledPanel(cv::Mat const& image, std::string const& label) {
+    cv::Mat panel;
+    if (image.channels() == 1) {
+        cv::cvtColor(image, panel, cv::COLOR_GRAY2BGR);
+    } else {
+        panel = image.clone();
+    }
+
+    cv::rectangle(
+        panel,
+        cv::Rect(0, 0, 250, 30),
+        cv::Scalar(0, 0, 0),
+        cv::FILLED);
+    cv::putText(
+        panel,
+        label,
+        cv::Point(8, 21),
+        cv::FONT_HERSHEY_SIMPLEX,
+        0.55,
+        cv::Scalar(255, 255, 255),
+        1,
+        cv::LINE_AA);
+    return panel;
+}
+
+cv::Mat makeVideoVisualization(
+    cv::Mat const& croppedBgr,
+    PredictionVisualizations const& visualizations) {
+    cv::Mat top;
+    cv::Mat bottom;
+    cv::Mat composite;
+
+    cv::hconcat(
+        std::vector<cv::Mat>{
+            labeledPanel(croppedBgr, "Input"),
+            labeledPanel(visualizations.semantic, "Semantic")},
+        top);
+    cv::hconcat(
+        std::vector<cv::Mat>{
+            labeledPanel(visualizations.depth, "Depth (visualization)"),
+            labeledPanel(
+                visualizations.uncertainty,
+                "Uncertainty (log-depth scale)")},
+        bottom);
+    cv::vconcat(std::vector<cv::Mat>{top, bottom}, composite);
+    return composite;
 }
 
 double percentile(std::vector<double> values, double fraction) {
@@ -549,9 +655,269 @@ void execute(
     }
 }
 
+using DeviceBuffers =
+    std::array<std::unique_ptr<DeviceBuffer>, kTensorSpecs.size()>;
+using HostTensors =
+    std::array<std::vector<std::uint16_t>, kTensorSpecs.size()>;
+
+void copyInputToDevice(
+    DeviceBuffers const& deviceBuffers,
+    HostTensors const& hostTensors,
+    cudaStream_t stream) {
+    checkCuda(
+        cudaMemcpyAsync(
+            deviceBuffers[0]->data(),
+            hostTensors[0].data(),
+            deviceBuffers[0]->size(),
+            cudaMemcpyHostToDevice,
+            stream),
+        "cudaMemcpyAsync input");
+}
+
+void copyOutputsToHost(
+    DeviceBuffers const& deviceBuffers,
+    HostTensors& hostTensors,
+    cudaStream_t stream) {
+    for (std::size_t index = 1; index < kTensorSpecs.size(); ++index) {
+        checkCuda(
+            cudaMemcpyAsync(
+                hostTensors[index].data(),
+                deviceBuffers[index]->data(),
+                deviceBuffers[index]->size(),
+                cudaMemcpyDeviceToHost,
+                stream),
+            "cudaMemcpyAsync output");
+    }
+}
+
+void validateFiniteOutputs(HostTensors const& hostTensors) {
+    for (std::size_t index = 1; index < kTensorSpecs.size(); ++index) {
+        if (!allFinite(hostTensors[index])) {
+            throw std::runtime_error(
+                "Non-finite values in " +
+                std::string{kTensorSpecs[index].name});
+        }
+    }
+}
+
+void writeRawOutputs(
+    fs::path const& directory,
+    HostTensors const& hostTensors) {
+    for (std::size_t index = 1; index < kTensorSpecs.size(); ++index) {
+        writeTensor(directory, kTensorSpecs[index], hostTensors[index]);
+    }
+}
+
+double meanLatency(std::vector<double> const& latencies) {
+    if (latencies.empty()) {
+        throw std::runtime_error("No latency samples were recorded");
+    }
+    return std::accumulate(
+        latencies.begin(), latencies.end(), 0.0) /
+        static_cast<double>(latencies.size());
+}
+
+void printRuntimeHeader(cudaDeviceProp const& properties) {
+    std::cout << "TensorRT runtime: " << getInferLibVersion() << '\n';
+    std::cout << "GPU: " << properties.name << '\n';
+    std::cout << "Precision: FP16\n";
+    for (auto const& spec : kTensorSpecs) {
+        std::cout << spec.name << ' ' << shapeString(spec.shape) << '\n';
+    }
+}
+
+int runVideo(
+    Options const& options,
+    nvinfer1::IExecutionContext& context,
+    DeviceBuffers const& deviceBuffers,
+    HostTensors& hostTensors,
+    CudaStream const& stream,
+    cudaDeviceProp const& properties) {
+    if (!options.video || !fs::is_regular_file(*options.video)) {
+        throw std::runtime_error(
+            "Video not found: " +
+            (options.video ? options.video->string() : std::string{}));
+    }
+
+    cv::VideoCapture capture(options.video->string());
+    if (!capture.isOpened()) {
+        throw std::runtime_error(
+            "Could not open video: " + options.video->string());
+    }
+
+    double sourceFps = capture.get(cv::CAP_PROP_FPS);
+    if (!std::isfinite(sourceFps) || sourceFps <= 0.0) {
+        sourceFps = 30.0;
+    }
+
+    cv::VideoWriter writer;
+    if (options.outputVideo) {
+        fs::path const parent = options.outputVideo->parent_path();
+        if (!parent.empty()) {
+            fs::create_directories(parent);
+        }
+
+        std::string extension = options.outputVideo->extension().string();
+        std::transform(
+            extension.begin(),
+            extension.end(),
+            extension.begin(),
+            [](unsigned char value) {
+                return static_cast<char>(std::tolower(value));
+            });
+
+        int const fourcc =
+            extension == ".avi"
+                ? cv::VideoWriter::fourcc('M', 'J', 'P', 'G')
+                : cv::VideoWriter::fourcc('m', 'p', '4', 'v');
+
+        if (!writer.open(
+                options.outputVideo->string(),
+                fourcc,
+                sourceFps,
+                cv::Size(1280, 640),
+                true)) {
+            throw std::runtime_error(
+                "Could not open output video: " +
+                options.outputVideo->string());
+        }
+    }
+
+    auto const inputElements = elementCount(kTensorSpecs[0].shape);
+    hostTensors[0].assign(inputElements, 0);
+    copyInputToDevice(deviceBuffers, hostTensors, stream.get());
+
+    for (int iteration = 0;
+         iteration < options.warmupIterations;
+         ++iteration) {
+        execute(context, stream.get());
+    }
+    checkCuda(
+        cudaStreamSynchronize(stream.get()),
+        "video warmup synchronization");
+
+    std::vector<double> inferenceLatencies;
+    std::vector<double> pipelineLatencies;
+    std::vector<double> fullLoopLatencies;
+
+    int processedFrames = 0;
+    while (options.maxFrames == 0 || processedFrames < options.maxFrames) {
+        auto const fullStart = std::chrono::steady_clock::now();
+
+        cv::Mat frame;
+        if (!capture.read(frame)) {
+            break;
+        }
+
+        auto const pipelineStart = std::chrono::steady_clock::now();
+
+        cv::Mat croppedBgr = centerCropBgr(frame);
+        hostTensors[0] =
+            preprocessCroppedBgr(croppedBgr, inputElements);
+
+        copyInputToDevice(deviceBuffers, hostTensors, stream.get());
+        checkCuda(
+            cudaStreamSynchronize(stream.get()),
+            "video input synchronization");
+
+        auto const inferenceStart = std::chrono::steady_clock::now();
+        execute(context, stream.get());
+        checkCuda(
+            cudaStreamSynchronize(stream.get()),
+            "video inference synchronization");
+        auto const inferenceStop = std::chrono::steady_clock::now();
+
+        copyOutputsToHost(deviceBuffers, hostTensors, stream.get());
+        checkCuda(
+            cudaStreamSynchronize(stream.get()),
+            "video output synchronization");
+
+        validateFiniteOutputs(hostTensors);
+
+        PredictionVisualizations visualizations = makeVisualizations(
+            hostTensors[1],
+            hostTensors[2],
+            hostTensors[3]);
+
+        auto const pipelineStop = std::chrono::steady_clock::now();
+
+        if (writer.isOpened()) {
+            writer.write(
+                makeVideoVisualization(croppedBgr, visualizations));
+        }
+
+        auto const fullStop = std::chrono::steady_clock::now();
+
+        inferenceLatencies.push_back(
+            std::chrono::duration<double, std::milli>(
+                inferenceStop - inferenceStart).count());
+        pipelineLatencies.push_back(
+            std::chrono::duration<double, std::milli>(
+                pipelineStop - pipelineStart).count());
+        fullLoopLatencies.push_back(
+            std::chrono::duration<double, std::milli>(
+                fullStop - fullStart).count());
+
+        ++processedFrames;
+    }
+
+    if (processedFrames == 0) {
+        throw std::runtime_error("Video contained no decodable frames");
+    }
+
+    writeRawOutputs(options.outputDirectory, hostTensors);
+    writeVisualizations(
+        options.outputDirectory,
+        hostTensors[1],
+        hostTensors[2],
+        hostTensors[3]);
+
+    double const inferenceMean = meanLatency(inferenceLatencies);
+    double const pipelineMean = meanLatency(pipelineLatencies);
+    double const fullLoopMean = meanLatency(fullLoopLatencies);
+
+    printRuntimeHeader(properties);
+    std::cout << std::fixed << std::setprecision(3);
+    std::cout << "Mode: video\n";
+    std::cout << "Processed frames: " << processedFrames << '\n';
+    std::cout << "Source FPS: " << sourceFps << '\n';
+    std::cout << "TensorRT mean latency: "
+              << inferenceMean << " ms\n";
+    std::cout << "TensorRT P95 latency: "
+              << percentile(inferenceLatencies, 0.95) << " ms\n";
+    std::cout << "TensorRT throughput: "
+              << 1000.0 / inferenceMean << " FPS\n";
+    std::cout << "Pipeline mean latency: "
+              << pipelineMean << " ms\n";
+    std::cout << "Pipeline P95 latency: "
+              << percentile(pipelineLatencies, 0.95) << " ms\n";
+    std::cout << "Pipeline throughput: "
+              << 1000.0 / pipelineMean << " FPS\n";
+    std::cout << "Full-loop mean latency: "
+              << fullLoopMean << " ms\n";
+    std::cout << "Full-loop P95 latency: "
+              << percentile(fullLoopLatencies, 0.95) << " ms\n";
+    std::cout << "Full-loop throughput: "
+              << 1000.0 / fullLoopMean << " FPS\n";
+    std::cout << "Full-loop timing includes decode";
+    if (writer.isOpened()) {
+        std::cout << " and visualization-video encoding";
+    }
+    std::cout << ".\n";
+    std::cout << "Final-frame outputs: "
+              << options.outputDirectory << '\n';
+    if (options.outputVideo) {
+        std::cout << "Visualization video: "
+                  << *options.outputVideo << '\n';
+    }
+    std::cout << "All outputs finite: true\n";
+    return 0;
+}
+
 int run(Options const& options) {
     if (!fs::is_regular_file(options.engine)) {
-        throw std::runtime_error("Engine not found: " + options.engine.string());
+        throw std::runtime_error(
+            "Engine not found: " + options.engine.string());
     }
 
     int deviceCount{};
@@ -562,7 +928,9 @@ int run(Options const& options) {
     checkCuda(cudaSetDevice(0), "cudaSetDevice");
 
     cudaDeviceProp properties{};
-    checkCuda(cudaGetDeviceProperties(&properties, 0), "cudaGetDeviceProperties");
+    checkCuda(
+        cudaGetDeviceProperties(&properties, 0),
+        "cudaGetDeviceProperties");
 
     Logger logger;
     auto const engineBytes = readBinaryFile(options.engine);
@@ -573,7 +941,8 @@ int run(Options const& options) {
     }
 
     std::unique_ptr<nvinfer1::ICudaEngine> engine{
-        runtime->deserializeCudaEngine(engineBytes.data(), engineBytes.size())};
+        runtime->deserializeCudaEngine(
+            engineBytes.data(), engineBytes.size())};
     if (!engine) {
         throw std::runtime_error("Could not deserialize TensorRT engine");
     }
@@ -582,74 +951,92 @@ int run(Options const& options) {
     std::unique_ptr<nvinfer1::IExecutionContext> context{
         engine->createExecutionContext()};
     if (!context) {
-        throw std::runtime_error("Could not create TensorRT execution context");
+        throw std::runtime_error(
+            "Could not create TensorRT execution context");
     }
 
-    std::array<std::unique_ptr<DeviceBuffer>, kTensorSpecs.size()> deviceBuffers;
-    std::array<std::vector<std::uint16_t>, kTensorSpecs.size()> hostTensors;
+    DeviceBuffers deviceBuffers;
+    HostTensors hostTensors;
 
-    auto const inputElements = elementCount(kTensorSpecs[0].shape);
-
-    if (options.image) {
-        hostTensors[0] = preprocessImage(*options.image, inputElements);
-    } else {
-        hostTensors[0] = loadInput(options.input, inputElements);
-    }
-
-    for (std::size_t index = 0; index < kTensorSpecs.size(); ++index) {
+    for (std::size_t index = 0;
+         index < kTensorSpecs.size();
+         ++index) {
         auto const elements = elementCount(kTensorSpecs[index].shape);
         auto const bytes = elements * sizeof(std::uint16_t);
-        if (index != 0) {
-            hostTensors[index].resize(elements);
-        }
+
+        hostTensors[index].resize(elements);
         deviceBuffers[index] = std::make_unique<DeviceBuffer>(bytes);
+
         if (!context->setTensorAddress(
-                kTensorSpecs[index].name.data(), deviceBuffers[index]->data())) {
+                kTensorSpecs[index].name.data(),
+                deviceBuffers[index]->data())) {
             throw std::runtime_error(
-                "Could not bind " + std::string{kTensorSpecs[index].name});
+                "Could not bind " +
+                std::string{kTensorSpecs[index].name});
         }
     }
 
     CudaStream stream;
-    checkCuda(
-        cudaMemcpyAsync(
-            deviceBuffers[0]->data(), hostTensors[0].data(),
-            deviceBuffers[0]->size(), cudaMemcpyHostToDevice, stream.get()),
-        "cudaMemcpyAsync input");
 
-    for (int iteration = 0; iteration < options.warmupIterations; ++iteration) {
+    if (options.video) {
+        return runVideo(
+            options,
+            *context,
+            deviceBuffers,
+            hostTensors,
+            stream,
+            properties);
+    }
+
+    auto const inputElements = elementCount(kTensorSpecs[0].shape);
+
+    if (options.image) {
+        hostTensors[0] =
+            preprocessImage(*options.image, inputElements);
+    } else {
+        hostTensors[0] =
+            loadInput(options.input, inputElements);
+    }
+
+    copyInputToDevice(deviceBuffers, hostTensors, stream.get());
+
+    for (int iteration = 0;
+         iteration < options.warmupIterations;
+         ++iteration) {
         execute(*context, stream.get());
     }
-    checkCuda(cudaStreamSynchronize(stream.get()), "warmup synchronization");
+    checkCuda(
+        cudaStreamSynchronize(stream.get()),
+        "warmup synchronization");
 
     std::vector<double> latencies;
-    latencies.reserve(static_cast<std::size_t>(options.measuredIterations));
-    for (int iteration = 0; iteration < options.measuredIterations; ++iteration) {
+    latencies.reserve(
+        static_cast<std::size_t>(options.measuredIterations));
+
+    for (int iteration = 0;
+         iteration < options.measuredIterations;
+         ++iteration) {
         auto const start = std::chrono::steady_clock::now();
+
         execute(*context, stream.get());
-        checkCuda(cudaStreamSynchronize(stream.get()), "inference synchronization");
-        auto const stop = std::chrono::steady_clock::now();
-        latencies.push_back(
-            std::chrono::duration<double, std::milli>(stop - start).count());
-    }
-
-    for (std::size_t index = 1; index < kTensorSpecs.size(); ++index) {
         checkCuda(
-            cudaMemcpyAsync(
-                hostTensors[index].data(), deviceBuffers[index]->data(),
-                deviceBuffers[index]->size(), cudaMemcpyDeviceToHost, stream.get()),
-            "cudaMemcpyAsync output");
-    }
-    checkCuda(cudaStreamSynchronize(stream.get()), "output synchronization");
+            cudaStreamSynchronize(stream.get()),
+            "inference synchronization");
 
-    for (std::size_t index = 1; index < kTensorSpecs.size(); ++index) {
-        if (!allFinite(hostTensors[index])) {
-            throw std::runtime_error(
-                "Non-finite values in " + std::string{kTensorSpecs[index].name});
-        }
-        writeTensor(
-            options.outputDirectory, kTensorSpecs[index], hostTensors[index]);
+        auto const stop = std::chrono::steady_clock::now();
+
+        latencies.push_back(
+            std::chrono::duration<double, std::milli>(
+                stop - start).count());
     }
+
+    copyOutputsToHost(deviceBuffers, hostTensors, stream.get());
+    checkCuda(
+        cudaStreamSynchronize(stream.get()),
+        "output synchronization");
+
+    validateFiniteOutputs(hostTensors);
+    writeRawOutputs(options.outputDirectory, hostTensors);
 
     if (options.image) {
         writeVisualizations(
@@ -659,24 +1046,19 @@ int run(Options const& options) {
             hostTensors[3]);
     }
 
-    auto const mean = std::accumulate(latencies.begin(), latencies.end(), 0.0) /
-        static_cast<double>(latencies.size());
+    double const mean = meanLatency(latencies);
 
-    std::cout << "TensorRT runtime: " << getInferLibVersion() << '\n';
-    std::cout << "GPU: " << properties.name << '\n';
-    std::cout << "Precision: FP16\n";
-    for (auto const& spec : kTensorSpecs) {
-        std::cout << spec.name << ' ' << shapeString(spec.shape) << '\n';
-    }
+    printRuntimeHeader(properties);
     std::cout << std::fixed << std::setprecision(3);
     std::cout << "Mean latency: " << mean << " ms\n";
-    std::cout << "P95 latency: " << percentile(latencies, 0.95) << " ms\n";
-    std::cout << "Throughput: " << 1000.0 / mean << " FPS\n";
+    std::cout << "P95 latency: "
+              << percentile(latencies, 0.95) << " ms\n";
+    std::cout << "Throughput: "
+              << 1000.0 / mean << " FPS\n";
     std::cout << "Outputs: " << options.outputDirectory << '\n';
     std::cout << "All outputs finite: true\n";
     return 0;
 }
-
 }  // namespace
 
 int main(int argc, char** argv) {

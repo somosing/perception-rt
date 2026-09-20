@@ -1,18 +1,21 @@
 # Native C++ TensorRT deployment
 
-This page documents the PerceptionRT native C++ TensorRT FP16 deployment pipeline. The v0.8.0 release extends the validated v0.7.0 raw-tensor runtime with direct image preprocessing and native prediction postprocessing.
+This page documents the PerceptionRT native C++ TensorRT FP16 deployment pipeline. The v0.9.0 release candidate extends the validated v0.8.0 image pipeline with native video-file inference, runtime reuse across frames and application-level timing.
 
 ## Scope
 
 The native deployment stage adds a standalone C++17 executable that:
 
-- decodes images with OpenCV and applies deterministic 320 × 640 center-crop preprocessing;
+- decodes images and video files with OpenCV;
+- applies deterministic 320 × 640 center-crop preprocessing;
 - performs BGR-to-RGB conversion, ImageNet normalization and HWC-to-CHW FP16 conversion;
 - deserializes and validates the TensorRT FP16 engine;
-- executes inference using reusable CUDA buffers and a dedicated stream;
+- reuses one execution context, CUDA stream and set of device buffers across video frames;
 - writes the three raw FP16 outputs;
 - performs native semantic, metric-depth and uncertainty postprocessing;
-- writes semantic, depth and uncertainty PNG visualizations.
+- writes semantic, depth and uncertainty PNG visualizations;
+- optionally writes a 1280 × 640 2×2 video visualization;
+- reports TensorRT-only, pipeline and full-loop latency separately.
 
 The executable does not import Python, PyTorch, NumPy or ONNX Runtime. Python
 is used only by the validation and benchmark orchestration tools.
@@ -93,9 +96,9 @@ The executable accepts only the validated static FP16 contract:
 Startup fails if a tensor name, order, mode, shape or type differs. This avoids
 silently executing an incompatible engine.
 
-## Image and tensor input
+## Input modes
 
-The runtime supports two mutually exclusive input modes.
+The runtime supports three mutually exclusive input modes: raw FP16 tensor, direct image and video file.
 
 Direct image inference:
 
@@ -117,9 +120,32 @@ build/native/perception_rt_native \\
     --output-dir outputs/native_cpp/predictions
 ```
 
-Raw input must contain exactly `1,228,800` bytes. `--image` and `--input` cannot be used together.
+Raw input must contain exactly `1,228,800` bytes.
 
-The runtime always writes the raw FP16 tensors `semantic_logits.fp16.bin`, `log_depth.fp16.bin` and `depth_log_scale.fp16.bin`. With `--image` it additionally writes `semantic.png`, `depth.png` and `uncertainty.png`.
+Video-file inference:
+
+```bash
+build/native/perception_rt_native \
+    --engine outputs/tensorrt/perception_rt_mit_b2_fp16.engine \
+    --video outputs/native_cpp/v09_benchmark_input.avi \
+    --output-video outputs/native_cpp/v09_visualization.avi \
+    --output-dir outputs/native_cpp/video_predictions \
+    --max-frames 100
+```
+
+Video mode decodes frames sequentially and reuses the already-created TensorRT
+engine, execution context, CUDA stream and device allocations. Each decoded
+frame is center-cropped and normalized using the same path as direct image
+inference. `--max-frames 0` means process the complete video.
+
+`--output-video` is optional. When enabled, it writes a 1280 × 640 2×2
+visualization containing the cropped BGR input, semantic prediction, depth
+visualization and uncertainty visualization.
+
+`--input`, `--image` and `--video` cannot be combined. `--output-video` and
+`--max-frames` are valid only with `--video`.
+
+The runtime always writes the raw FP16 tensors `semantic_logits.fp16.bin`, `log_depth.fp16.bin` and `depth_log_scale.fp16.bin`. Image mode writes `semantic.png`, `depth.png` and `uncertainty.png`; video mode writes the same PNGs for the final processed frame.
 
 Semantic output uses argmax over 15 classes. Metric depth is decoded as `clamp(exp(log_depth), 0.001, 200.0)`. Uncertainty is decoded as `exp(clamp(depth_log_scale, -6, 6))` and represents a learned scale in log-depth space, not direct ± metres uncertainty.
 
@@ -184,23 +210,72 @@ Protocol:
 The measurement represents synchronous model execution, not complete camera-to-
 prediction application latency. It is hardware- and power-state-specific.
 
+## Native video benchmark
+
+The v0.9 benchmark uses a deterministic 100-frame MJPEG video generated from
+Virtual KITTI 2 `Scene02/fog/Camera_0` frames. The encoded input is
+`1242 × 374` at `30 FPS`; the even height is required by the MJPEG writer and
+does not change the model's `320 × 640` center crop.
+
+Protocol:
+
+- 30 TensorRT warmup iterations before frame processing;
+- 100 decoded video frames;
+- static batch size one;
+- one TensorRT engine and execution context for the entire video;
+- one non-default CUDA stream and reusable device buffers;
+- synchronous host-to-device and device-to-host transfers per frame;
+- CPU preprocessing and postprocessing;
+- file decoding runs as fast as possible rather than being paced to the source FPS.
+
+Timing boundaries:
+
+- **TensorRT**: `enqueueV3` plus stream synchronization;
+- **Pipeline**: preprocessing + H2D + TensorRT + D2H + native postprocessing;
+- **Full loop**: video decode + complete pipeline, plus visualization encoding when enabled.
+
+### Without output-video encoding
+
+| Metric | Mean latency | P95 latency | Throughput |
+|---|---:|---:|---:|
+| TensorRT | 6.330 ms | 6.997 ms | 157.985 FPS |
+| Pipeline | 23.281 ms | 24.707 ms | 42.954 FPS |
+| Full loop including decode | 24.490 ms | 26.404 ms | 40.834 FPS |
+
+### With 2×2 output-video encoding
+
+| Metric | Mean latency | P95 latency | Throughput |
+|---|---:|---:|---:|
+| TensorRT | 6.508 ms | 7.024 ms | 153.660 FPS |
+| Pipeline | 24.648 ms | 26.010 ms | 40.571 FPS |
+| Full loop including decode and encoding | 32.796 ms | 34.413 ms | 30.491 FPS |
+
+The output-video run produced 100 frames at `1280 × 640`. These measurements
+show file-based application throughput on the validated RTX 3060 Laptop GPU.
+They are not a live-camera latency measurement because `VideoCapture` reads the
+file as quickly as possible without source-rate pacing.
+
 ## Verification
 
 The release candidate passed:
 
 - 128 Python tests;
-- two CTests for the native command-line interface;
+- four CTests for the native command-line interface;
 - native engine deserialization and four-tensor contract validation;
 - finite-output smoke inference;
 - five-sample bit-exact native parity;
-- a 30-warmup, 100-iteration native benchmark.
+- a 20-frame video smoke test with valid raw tensors, PNG outputs and 1280 × 640 visualization video;
+- a deterministic 100-frame video benchmark with and without output-video encoding.
 
 ## Limitations
 
 - Only the static batch-one FP16 engine is supported by the C++ executable.
-- Direct image preprocessing uses a fixed `320 × 640` center crop; smaller images are rejected rather than resized.
-- Depth and uncertainty PNGs are visualization products; raw tensors remain the numerical outputs.
-- OpenCV C++ development files are required.
+- Direct image and video preprocessing use a fixed `320 × 640` center crop; smaller frames are rejected rather than resized.
+- Video input currently supports files through OpenCV `VideoCapture`; live camera capture and frame pacing are not implemented.
+- Video execution is synchronous and sequential; preprocessing, transfers, inference and postprocessing are not overlapped.
+- The optional 2×2 output video adds CPU composition and codec overhead.
+- Depth and uncertainty PNGs/video panels are visualization products; raw tensors remain the numerical outputs.
+- OpenCV C++ development files with `videoio` support are required.
 - TensorRT engines must be rebuilt for the target environment.
 - The measured result is specific to the RTX 3060 Laptop GPU and its runtime
   state.

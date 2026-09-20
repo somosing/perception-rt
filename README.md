@@ -22,6 +22,29 @@ complete pipeline can be deployed efficiently on NVIDIA hardware.
 
 ## Current status
 
+### v0.9.0 release candidate — Native video inference pipeline
+
+- [x] Direct OpenCV video-file decoding in C++
+- [x] Frame-by-frame reuse of one TensorRT engine, execution context, CUDA stream and device buffers
+- [x] Existing deterministic `320 × 640` image preprocessing reused for video frames
+- [x] Native semantic, metric-depth and uncertainty postprocessing per frame
+- [x] Optional `1280 × 640` 2×2 visualization video
+- [x] Separate TensorRT-only, pipeline and full-loop latency measurements
+- [x] Existing raw-input and direct-image modes preserved
+- [x] 128 passing Python tests and four passing CTests
+- [x] Five-sample native C++–Python TensorRT parity remains bit-exact
+
+A deterministic 100-frame `30 FPS` MJPEG benchmark on the RTX 3060 Laptop GPU
+measured `23.281 ms` mean / `24.707 ms` P95 for the native processing pipeline
+(preprocessing, host-to-device transfer, TensorRT, device-to-host transfer and
+postprocessing), corresponding to `42.954 FPS`. Including video decode, the
+full loop measured `24.490 ms` mean / `26.404 ms` P95 and `40.834 FPS`.
+
+With the optional 2×2 visualization video enabled, the full loop measured
+`32.796 ms` mean / `34.413 ms` P95 and `30.491 FPS`. File input is decoded as
+fast as possible rather than paced like a live camera, so these are application
+throughput measurements, not a live-camera latency claim.
+
 ### v0.8.0 — Native image-to-prediction pipeline
 
 - [x] Direct OpenCV image decoding in C++
@@ -468,8 +491,9 @@ are documented in [`docs/tensorrt_int8.md`](docs/tensorrt_int8.md).
 
 ## Native C++ TensorRT deployment
 
-The native runtime now supports both direct image input and the original raw
-FP16 tensor interface.
+The native runtime supports raw FP16 tensors, direct image input and native
+video-file inference. The video path reuses one TensorRT engine, execution
+context, CUDA stream and set of device buffers across frames.
 
 Build the native executable:
 
@@ -497,6 +521,22 @@ It then writes the raw network outputs plus:
 - `depth.png`
 - `uncertainty.png`
 
+Run native video inference:
+
+~~~bash
+build/native/perception_rt_native \
+    --engine outputs/tensorrt/perception_rt_mit_b2_fp16.engine \
+    --video outputs/native_cpp/v09_benchmark_input.avi \
+    --output-video outputs/native_cpp/v09_visualization.avi \
+    --output-dir outputs/native_cpp/video_predictions \
+    --max-frames 100
+~~~
+
+`--video` processes frames sequentially while reusing the TensorRT runtime
+objects and CUDA allocations. `--output-video` is optional and writes a
+`1280 × 640` 2×2 view containing the cropped input, semantic prediction, depth
+visualization and uncertainty visualization.
+
 The original raw-input path remains available:
 
 ~~~bash
@@ -506,7 +546,7 @@ build/native/perception_rt_native \
     --output-dir outputs/native_cpp/predictions
 ~~~
 
-`--image` and `--input` are mutually exclusive.
+`--input`, `--image` and `--video` are mutually exclusive. `--max-frames` and `--output-video` apply only to video mode.
 
 Validate native output parity and reproduce the established device-resident
 benchmark:
@@ -528,8 +568,21 @@ The timing above covers synchronized TensorRT execution with device-resident
 buffers. Image decoding, preprocessing, host-device transfers and visualization
 are excluded, so it is not an end-to-end image-pipeline latency measurement.
 
-Full build instructions, preprocessing behavior, tensor formats, validation
-evidence and limitations are documented in
+The v0.9 deterministic 100-frame video benchmark adds application-level timing:
+
+| Video path | Mean latency | P95 latency | Throughput |
+|---|---:|---:|---:|
+| TensorRT only | 6.330 ms | 6.997 ms | 157.985 FPS |
+| Native pipeline, excluding decode | 23.281 ms | 24.707 ms | 42.954 FPS |
+| Full loop including decode | 24.490 ms | 26.404 ms | 40.834 FPS |
+| Full loop with 2×2 visualization encoding | 32.796 ms | 34.413 ms | 30.491 FPS |
+
+The benchmark source is a deterministic 100-frame, `30 FPS`, `1242 × 374`
+MJPEG file generated from Virtual KITTI 2 Scene02/fog Camera_0 frames. File
+decoding runs as fast as possible and is not paced to source frame rate.
+
+Full build instructions, preprocessing behavior, tensor formats, validation,
+video benchmarking and limitations are documented in
 [`docs/native_cpp_tensorrt.md`](docs/native_cpp_tensorrt.md).
 
 ## Development environment
